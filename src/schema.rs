@@ -1,9 +1,9 @@
-use schemars::schema::RootSchema;
+use schemars::Schema;
 use serde_json::{Map, Value};
 
-/// Convert a schemars RootSchema to a clean JSON Value with inlined refs.
-pub(crate) fn from_root_schema(root: &RootSchema) -> Value {
-    let mut value = serde_json::to_value(root).unwrap_or(Value::Null);
+/// Convert a schemars Schema to a clean JSON Value with inlined refs.
+pub(crate) fn from_schema(schema: &Schema) -> Value {
+    let mut value = serde_json::to_value(schema).unwrap_or(Value::Null);
 
     if let Some(obj) = value.as_object_mut() {
         obj.remove("$schema");
@@ -13,40 +13,40 @@ pub(crate) fn from_root_schema(root: &RootSchema) -> Value {
     inline_refs(&mut value, &definitions);
 
     if let Some(obj) = value.as_object_mut() {
-        obj.remove("definitions");
+        obj.remove("$defs");
     }
 
     value
 }
 
 /// Prepare the `response_format` payload for OpenAI structured output (strict mode).
-pub(crate) fn wrap_for_openai(root: &RootSchema, name: &str) -> Value {
-    let mut schema = from_root_schema(root);
-    remove_key_recursive(&mut schema, "title");
-    remove_key_recursive(&mut schema, "format");
-    add_additional_properties_false(&mut schema);
-    make_all_properties_required(&mut schema);
+pub(crate) fn wrap_for_openai(schema: &Schema, name: &str) -> Value {
+    let mut schema_value = from_schema(schema);
+    remove_key_recursive(&mut schema_value, "title");
+    remove_key_recursive(&mut schema_value, "format");
+    add_additional_properties_false(&mut schema_value);
+    make_all_properties_required(&mut schema_value);
 
     serde_json::json!({
         "type": "json_schema",
         "json_schema": {
             "name": name,
             "strict": true,
-            "schema": schema
+            "schema": schema_value
         }
     })
 }
 
 /// Clean up the schema for use as Anthropic tool `input_schema`.
-pub(crate) fn clean_for_anthropic(root: &RootSchema) -> Value {
-    let mut schema = from_root_schema(root);
-    remove_key_recursive(&mut schema, "title");
-    schema
+pub(crate) fn clean_for_anthropic(schema: &Schema) -> Value {
+    let mut schema_value = from_schema(schema);
+    remove_key_recursive(&mut schema_value, "title");
+    schema_value
 }
 
 fn extract_definitions(value: &Value) -> Map<String, Value> {
     value
-        .get("definitions")
+        .get("$defs")
         .and_then(|d| d.as_object())
         .cloned()
         .unwrap_or_default()
@@ -55,15 +55,14 @@ fn extract_definitions(value: &Value) -> Map<String, Value> {
 fn inline_refs(value: &mut Value, definitions: &Map<String, Value>) {
     match value {
         Value::Object(map) => {
-            if let Some(ref_str) = map.get("$ref").and_then(|r| r.as_str()).map(String::from) {
-                if let Some(name) = ref_str.strip_prefix("#/definitions/") {
-                    if let Some(def) = definitions.get(name) {
-                        let mut resolved = def.clone();
-                        inline_refs(&mut resolved, definitions);
-                        *value = resolved;
-                        return;
-                    }
-                }
+            if let Some(ref_str) = map.get("$ref").and_then(|r| r.as_str()).map(String::from)
+                && let Some(name) = ref_str.strip_prefix("#/$defs/")
+                && let Some(def) = definitions.get(name)
+            {
+                let mut resolved = def.clone();
+                inline_refs(&mut resolved, definitions);
+                *value = resolved;
+                return;
             }
             for v in map.values_mut() {
                 inline_refs(v, definitions);
@@ -119,12 +118,11 @@ fn add_additional_properties_false(value: &mut Value) {
 fn make_all_properties_required(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            if map.get("type").and_then(|t| t.as_str()) == Some("object") {
-                if let Some(props) = map.get("properties").and_then(|p| p.as_object()) {
-                    let all_keys: Vec<Value> =
-                        props.keys().map(|k| Value::String(k.clone())).collect();
-                    map.insert("required".into(), Value::Array(all_keys));
-                }
+            if map.get("type").and_then(|t| t.as_str()) == Some("object")
+                && let Some(props) = map.get("properties").and_then(|p| p.as_object())
+            {
+                let all_keys: Vec<Value> = props.keys().map(|k| Value::String(k.clone())).collect();
+                map.insert("required".into(), Value::Array(all_keys));
             }
             for v in map.values_mut() {
                 make_all_properties_required(v);
@@ -163,42 +161,42 @@ mod tests {
     }
 
     #[test]
-    fn test_from_root_schema_removes_meta() {
-        let root = schemars::schema_for!(Simple);
-        let value = from_root_schema(&root);
+    fn test_from_schema_removes_meta() {
+        let schema = schemars::schema_for!(Simple);
+        let value = from_schema(&schema);
         assert!(value.get("$schema").is_none());
     }
 
     #[test]
-    fn test_from_root_schema_inlines_refs() {
-        let root = schemars::schema_for!(Nested);
-        let value = from_root_schema(&root);
-        assert!(value.get("definitions").is_none());
+    fn test_from_schema_inlines_refs() {
+        let schema = schemars::schema_for!(Nested);
+        let value = from_schema(&schema);
+        assert!(value.get("$defs").is_none());
         let json = serde_json::to_string(&value).unwrap();
         assert!(!json.contains("$ref"));
     }
 
     #[test]
     fn test_openai_strict_mode() {
-        let root = schemars::schema_for!(WithOption);
-        let wrapped = wrap_for_openai(&root, "WithOption");
+        let schema = schemars::schema_for!(WithOption);
+        let wrapped = wrap_for_openai(&schema, "WithOption");
         let js = &wrapped["json_schema"];
         assert_eq!(js["name"], "WithOption");
         assert_eq!(js["strict"], true);
 
-        let schema = &js["schema"];
-        assert!(schema.get("title").is_none());
-        assert_eq!(schema["additionalProperties"], false);
+        let schema_val = &js["schema"];
+        assert!(schema_val.get("title").is_none());
+        assert_eq!(schema_val["additionalProperties"], false);
 
-        let required = schema["required"].as_array().unwrap();
+        let required = schema_val["required"].as_array().unwrap();
         assert!(required.contains(&Value::String("name".into())));
         assert!(required.contains(&Value::String("email".into())));
     }
 
     #[test]
     fn test_anthropic_schema() {
-        let root = schemars::schema_for!(Simple);
-        let value = clean_for_anthropic(&root);
+        let schema = schemars::schema_for!(Simple);
+        let value = clean_for_anthropic(&schema);
         assert!(value.get("title").is_none());
         assert!(value.get("$schema").is_none());
         assert_eq!(value["type"], "object");
@@ -206,12 +204,12 @@ mod tests {
 
     #[test]
     fn test_nested_additional_properties() {
-        let root = schemars::schema_for!(Nested);
-        let wrapped = wrap_for_openai(&root, "Nested");
-        let schema = &wrapped["json_schema"]["schema"];
-        assert_eq!(schema["additionalProperties"], false);
+        let schema = schemars::schema_for!(Nested);
+        let wrapped = wrap_for_openai(&schema, "Nested");
+        let schema_val = &wrapped["json_schema"]["schema"];
+        assert_eq!(schema_val["additionalProperties"], false);
 
-        let contact_schema = &schema["properties"]["contact"];
+        let contact_schema = &schema_val["properties"]["contact"];
         assert_eq!(contact_schema["additionalProperties"], false);
     }
 }
