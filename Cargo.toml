@@ -1,12 +1,13 @@
 [package]
 name = "instructors"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.91"
+edition.workspace = true
+rust-version.workspace = true
 description = "Type-safe structured output extraction from LLMs. The Rust instructor."
-license = "MIT"
-repository = "https://github.com/goliajp/airs"
-homepage = "https://github.com/goliajp/airs"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 documentation = "https://docs.rs/instructors"
 keywords = ["llm", "openai", "anthropic", "structured-output", "instructor"]
 categories = ["api-bindings", "data-structures"]
@@ -15,10 +16,10 @@ readme = "README.md"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-schemars = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+schemars = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 thiserror = "2"
-tiktoken = { path = "../tiktoken", version = "2.1", optional = true }
+tiktoken = { path = "../tiktoken", version = "2.1.1", optional = true }
 
 [features]
 default = ["cost-tracking"]

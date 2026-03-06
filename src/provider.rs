@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::schema;
-use schemars::schema::RootSchema;
+use schemars::Schema;
 use serde::{Deserialize, Serialize};
 
 pub(crate) struct RawResponse {
@@ -36,7 +36,7 @@ impl ProviderKind {
         model: &str,
         system: Option<&str>,
         messages: &[Message],
-        root_schema: &RootSchema,
+        schema: &Schema,
         schema_name: &str,
         temperature: Option<f64>,
         max_tokens: u32,
@@ -50,7 +50,7 @@ impl ProviderKind {
                     model,
                     system,
                     messages,
-                    root_schema,
+                    schema,
                     schema_name,
                     temperature,
                 )
@@ -58,22 +58,13 @@ impl ProviderKind {
             }
             Self::Anthropic { api_key, base_url } => {
                 send_anthropic(
-                    http,
-                    base_url,
-                    api_key,
-                    model,
-                    system,
-                    messages,
-                    root_schema,
-                    max_tokens,
+                    http, base_url, api_key, model, system, messages, schema, max_tokens,
                 )
                 .await
             }
         }
     }
 }
-
-// ──── OpenAI ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct OpenAiRequest {
@@ -115,7 +106,7 @@ async fn send_openai(
     model: &str,
     system: Option<&str>,
     messages: &[Message],
-    root_schema: &RootSchema,
+    schema: &Schema,
     schema_name: &str,
     temperature: Option<f64>,
 ) -> Result<RawResponse> {
@@ -137,7 +128,7 @@ async fn send_openai(
         });
     }
 
-    let response_format = schema::wrap_for_openai(root_schema, schema_name);
+    let response_format = schema::wrap_for_openai(schema, schema_name);
 
     let body = OpenAiRequest {
         model: model.into(),
@@ -179,8 +170,6 @@ async fn send_openai(
         output_tokens: usage.completion_tokens,
     })
 }
-
-// ──── Anthropic ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct AnthropicRequest {
@@ -241,7 +230,7 @@ async fn send_anthropic(
     model: &str,
     system: Option<&str>,
     messages: &[Message],
-    root_schema: &RootSchema,
+    schema: &Schema,
     max_tokens: u32,
 ) -> Result<RawResponse> {
     let ant_messages: Vec<AnthropicMessage> = messages
@@ -254,7 +243,7 @@ async fn send_anthropic(
 
     let sys_text = system.unwrap_or("Extract the requested information from the given text.");
 
-    let input_schema = schema::clean_for_anthropic(root_schema);
+    let input_schema = schema::clean_for_anthropic(schema);
 
     let body = AnthropicRequest {
         model: model.into(),

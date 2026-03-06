@@ -215,11 +215,8 @@ where
     }
 
     async fn execute(self) -> Result<ExtractResult<T>> {
-        let schema_name = T::schema_name();
-        let root_schema = {
-            let gen = schemars::gen::SchemaSettings::draft07().into_generator();
-            gen.into_root_schema_for::<T>()
-        };
+        let schema_name = T::schema_name().to_string();
+        let root_schema = schemars::schema_for!(T);
 
         let mut user_content = self.prompt.clone();
         if let Some(ctx) = &self.context {
