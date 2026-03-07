@@ -215,8 +215,8 @@ async fn read_stream(
 
         // process complete SSE lines
         while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim_end_matches('\r').to_string();
-            buffer = buffer[pos + 1..].to_string();
+            let line: String = buffer[..pos].trim_end_matches('\r').into();
+            buffer.drain(..pos + 1);
 
             if line.is_empty() || line.starts_with(':') {
                 continue;

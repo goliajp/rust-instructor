@@ -243,39 +243,39 @@ async fn read_stream(
 
         // process complete SSE lines
         while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim_end_matches('\r').to_string();
-            buffer = buffer[pos + 1..].to_string();
+            let line: String = buffer[..pos].trim_end_matches('\r').into();
+            buffer.drain(..pos + 1);
 
             if line.is_empty() || line.starts_with(':') || line.starts_with("event:") {
                 continue;
             }
 
-            if let Some(data) = line.strip_prefix("data: ") {
-                if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
-                    match event.event_type.as_str() {
-                        "message_start" => {
-                            if let Some(msg) = event.message
-                                && let Some(usage) = msg.usage
-                            {
-                                input_tokens = usage.input_tokens;
-                            }
+            if let Some(data) = line.strip_prefix("data: ")
+                && let Ok(event) = serde_json::from_str::<StreamEvent>(data)
+            {
+                match event.event_type.as_str() {
+                    "message_start" => {
+                        if let Some(msg) = event.message
+                            && let Some(usage) = msg.usage
+                        {
+                            input_tokens = usage.input_tokens;
                         }
-                        "content_block_delta" => {
-                            if let Some(delta) = event.delta
-                                && delta.delta_type.as_deref() == Some("input_json_delta")
-                                && let Some(partial) = delta.partial_json
-                            {
-                                callback(&partial);
-                                accumulated.push_str(&partial);
-                            }
-                        }
-                        "message_delta" => {
-                            if let Some(usage) = event.usage {
-                                output_tokens = usage.output_tokens;
-                            }
-                        }
-                        _ => {}
                     }
+                    "content_block_delta" => {
+                        if let Some(delta) = event.delta
+                            && delta.delta_type.as_deref() == Some("input_json_delta")
+                            && let Some(partial) = delta.partial_json
+                        {
+                            callback(&partial);
+                            accumulated.push_str(&partial);
+                        }
+                    }
+                    "message_delta" => {
+                        if let Some(usage) = event.usage {
+                            output_tokens = usage.output_tokens;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
