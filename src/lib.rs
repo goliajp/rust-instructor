@@ -72,6 +72,7 @@ mod validate;
 pub use batch::BatchBuilder;
 pub use client::{Client, ExtractBuilder, ExtractResult};
 pub use error::{Error, Result};
+pub use provider::Message;
 pub use usage::Usage;
 pub use validate::{Validate, ValidationError};
 
@@ -85,7 +86,9 @@ pub use serde;
 /// use instructors::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::{BatchBuilder, Client, ExtractResult, Usage, Validate, ValidationError};
+    pub use crate::{
+        BatchBuilder, Client, ExtractResult, Message, Usage, Validate, ValidationError,
+    };
     pub use schemars::JsonSchema;
     pub use serde::Deserialize;
 }
