@@ -1,7 +1,7 @@
 use schemars::Schema;
 use serde::{Deserialize, Serialize};
 
-use super::{ImageInput, Message, RawResponse};
+use super::{ImageInput, Message, RawResponse, StreamCallback};
 use crate::error::{Error, Result};
 use crate::schema;
 
@@ -12,6 +12,8 @@ struct Request {
     response_format: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,6 +61,23 @@ struct UsageInfo {
     completion_tokens: u32,
 }
 
+// streaming response types
+#[derive(Deserialize)]
+struct StreamChunk {
+    choices: Vec<StreamChoice>,
+    usage: Option<UsageInfo>,
+}
+
+#[derive(Deserialize)]
+struct StreamChoice {
+    delta: Option<StreamDelta>,
+}
+
+#[derive(Deserialize)]
+struct StreamDelta {
+    content: Option<String>,
+}
+
 fn build_content(msg: &Message) -> OaiContent {
     if msg.images.is_empty() {
         return OaiContent::Text(msg.content.clone());
@@ -93,7 +112,10 @@ pub(crate) async fn send_openai(
     schema: &Schema,
     schema_name: &str,
     temperature: Option<f64>,
+    on_stream: StreamCallback<'_>,
 ) -> Result<RawResponse> {
+    let streaming = on_stream.is_some();
+
     let mut oai_messages = Vec::with_capacity(messages.len() + 1);
 
     let sys = system.unwrap_or(
@@ -119,6 +141,7 @@ pub(crate) async fn send_openai(
         messages: oai_messages,
         response_format,
         temperature,
+        stream: streaming,
     };
 
     let resp = http
@@ -137,6 +160,14 @@ pub(crate) async fn send_openai(
         });
     }
 
+    if streaming {
+        read_stream(resp, on_stream.unwrap()).await
+    } else {
+        read_response(resp).await
+    }
+}
+
+async fn read_response(resp: reqwest::Response) -> Result<RawResponse> {
     let data: Response = resp.json().await?;
     let choice = data
         .choices
@@ -163,5 +194,60 @@ pub(crate) async fn send_openai(
         content: content_text,
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
+    })
+}
+
+async fn read_stream(
+    resp: reqwest::Response,
+    callback: &(dyn Fn(&str) + Send + Sync),
+) -> Result<RawResponse> {
+    use futures::StreamExt;
+
+    let mut accumulated = String::new();
+    let mut input_tokens = 0u32;
+    let mut output_tokens = 0u32;
+    let mut stream = resp.bytes_stream();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+        // process complete SSE lines
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].trim_end_matches('\r').to_string();
+            buffer = buffer[pos + 1..].to_string();
+
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" {
+                    continue;
+                }
+
+                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    if let Some(usage) = chunk.usage {
+                        input_tokens = usage.prompt_tokens;
+                        output_tokens = usage.completion_tokens;
+                    }
+                    for choice in chunk.choices {
+                        if let Some(delta) = choice.delta
+                            && let Some(content) = delta.content
+                        {
+                            callback(&content);
+                            accumulated.push_str(&content);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(RawResponse {
+        content: accumulated,
+        input_tokens,
+        output_tokens,
     })
 }
