@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use instructors::{Client, Error, ImageInput, Validate, ValidationError};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -597,4 +599,65 @@ async fn extract_with_multiple_images() {
         .unwrap();
 
     assert_eq!(result.value.name, "Comparison");
+}
+
+fn openai_stream_chunks(json_content: &str) -> String {
+    // simulate SSE streaming by splitting JSON content char-by-char
+    let mut sse = String::new();
+    for ch in json_content.chars() {
+        let chunk = serde_json::json!({
+            "choices": [{
+                "delta": { "content": ch.to_string() }
+            }]
+        });
+        sse.push_str(&format!("data: {chunk}\n\n"));
+    }
+    // final chunk with usage
+    let usage_chunk = serde_json::json!({
+        "choices": [],
+        "usage": { "prompt_tokens": 30, "completion_tokens": 10 }
+    });
+    sse.push_str(&format!("data: {usage_chunk}\n\n"));
+    sse.push_str("data: [DONE]\n\n");
+    sse
+}
+
+#[tokio::test]
+async fn extract_with_streaming() {
+    let server = MockServer::start().await;
+
+    let json_content = r#"{"name": "Streamed", "email": null}"#;
+    let sse_body = openai_stream_chunks(json_content);
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let chunks_clone = chunks.clone();
+
+    let client = Client::openai_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("test")
+        .on_stream(move |chunk| {
+            chunks_clone.lock().unwrap().push(chunk.to_string());
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Streamed");
+    assert_eq!(result.usage.input_tokens, 30);
+    assert_eq!(result.usage.output_tokens, 10);
+
+    let collected = chunks.lock().unwrap();
+    assert!(!collected.is_empty(), "stream callback should have been called");
+    let reassembled: String = collected.iter().cloned().collect();
+    assert_eq!(reassembled, json_content);
 }

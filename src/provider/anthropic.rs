@@ -1,7 +1,7 @@
 use schemars::Schema;
 use serde::{Deserialize, Serialize};
 
-use super::{ImageInput, Message, RawResponse};
+use super::{ImageInput, Message, RawResponse, StreamCallback};
 use crate::error::{Error, Result};
 use crate::schema;
 
@@ -14,6 +14,8 @@ struct Request {
     system: Option<String>,
     tools: Vec<Tool>,
     tool_choice: ToolChoice,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 #[derive(Serialize)]
@@ -82,6 +84,34 @@ struct UsageInfo {
     output_tokens: u32,
 }
 
+// streaming event types
+#[derive(Deserialize)]
+struct StreamEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    delta: Option<StreamDelta>,
+    #[serde(default)]
+    usage: Option<UsageInfo>,
+    #[serde(default)]
+    message: Option<StreamMessage>,
+}
+
+#[derive(Deserialize)]
+struct StreamDelta {
+    #[serde(rename = "type")]
+    #[serde(default)]
+    delta_type: Option<String>,
+    #[serde(default)]
+    partial_json: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StreamMessage {
+    #[serde(default)]
+    usage: Option<UsageInfo>,
+}
+
 fn build_content(msg: &Message) -> AntContent {
     if msg.images.is_empty() {
         return AntContent::Text(msg.content.clone());
@@ -115,7 +145,10 @@ pub(crate) async fn send_anthropic(
     messages: &[Message],
     schema: &Schema,
     max_tokens: u32,
+    on_stream: StreamCallback<'_>,
 ) -> Result<RawResponse> {
+    let streaming = on_stream.is_some();
+
     let ant_messages: Vec<AntMessage> = messages
         .iter()
         .map(|m| AntMessage {
@@ -141,6 +174,7 @@ pub(crate) async fn send_anthropic(
             choice_type: "tool".into(),
             name: "extract".into(),
         },
+        stream: streaming,
     };
 
     let resp = http
@@ -161,6 +195,14 @@ pub(crate) async fn send_anthropic(
         });
     }
 
+    if streaming {
+        read_stream(resp, on_stream.unwrap()).await
+    } else {
+        read_response(resp).await
+    }
+}
+
+async fn read_response(resp: reqwest::Response) -> Result<RawResponse> {
     let data: Response = resp.json().await?;
     let usage = data.usage.unwrap_or(UsageInfo {
         input_tokens: 0,
@@ -180,5 +222,68 @@ pub(crate) async fn send_anthropic(
         content,
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
+    })
+}
+
+async fn read_stream(
+    resp: reqwest::Response,
+    callback: &(dyn Fn(&str) + Send + Sync),
+) -> Result<RawResponse> {
+    use futures::StreamExt;
+
+    let mut accumulated = String::new();
+    let mut input_tokens = 0u32;
+    let mut output_tokens = 0u32;
+    let mut stream = resp.bytes_stream();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+        // process complete SSE lines
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].trim_end_matches('\r').to_string();
+            buffer = buffer[pos + 1..].to_string();
+
+            if line.is_empty() || line.starts_with(':') || line.starts_with("event:") {
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data: ") {
+                if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+                    match event.event_type.as_str() {
+                        "message_start" => {
+                            if let Some(msg) = event.message
+                                && let Some(usage) = msg.usage
+                            {
+                                input_tokens = usage.input_tokens;
+                            }
+                        }
+                        "content_block_delta" => {
+                            if let Some(delta) = event.delta
+                                && delta.delta_type.as_deref() == Some("input_json_delta")
+                                && let Some(partial) = delta.partial_json
+                            {
+                                callback(&partial);
+                                accumulated.push_str(&partial);
+                            }
+                        }
+                        "message_delta" => {
+                            if let Some(usage) = event.usage {
+                                output_tokens = usage.output_tokens;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(RawResponse {
+        content: accumulated,
+        input_tokens,
+        output_tokens,
     })
 }

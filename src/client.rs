@@ -228,6 +228,7 @@ impl Client {
             validator: None,
             on_request: None,
             on_response: None,
+            on_stream: None,
             _phantom: PhantomData,
         }
     }
@@ -265,6 +266,7 @@ impl Client {
             validator: None,
             on_request: None,
             on_response: None,
+            on_stream: None,
             _phantom: PhantomData,
         }
     }
@@ -289,11 +291,13 @@ pub struct ExtractBuilder<'a, T> {
     validator: Option<ValidatorFn<T>>,
     on_request: Option<RequestHook>,
     on_response: Option<ResponseHook>,
+    on_stream: Option<StreamHook>,
     _phantom: PhantomData<T>,
 }
 
 type RequestHook = Box<dyn Fn(&str, &str) + Send + Sync>;
 type ResponseHook = Box<dyn Fn(&Usage) + Send + Sync>;
+type StreamHook = Box<dyn Fn(&str) + Send + Sync>;
 
 impl<T> ExtractBuilder<'_, T>
 where
@@ -417,6 +421,21 @@ where
         }
     }
 
+    /// Enable streaming with a callback that receives each content delta.
+    ///
+    /// When set, the underlying API request uses SSE streaming. The callback
+    /// fires for each content chunk as it arrives. The final result is still
+    /// a complete `ExtractResult<T>` parsed from the accumulated response.
+    pub fn on_stream<F>(self, f: F) -> Self
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        Self {
+            on_stream: Some(Box::new(f)),
+            ..self
+        }
+    }
+
     /// Add a custom validation function. If validation fails, the error message
     /// is fed back to the LLM and the request is retried.
     ///
@@ -509,6 +528,7 @@ where
                     &schema_name,
                     self.temperature,
                     self.max_tokens,
+                    self.on_stream.as_deref(),
                 )
                 .await?;
 

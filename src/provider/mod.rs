@@ -4,6 +4,8 @@ mod openai;
 pub(crate) use anthropic::send_anthropic;
 pub(crate) use openai::send_openai;
 
+pub(crate) type StreamCallback<'a> = Option<&'a (dyn Fn(&str) + Send + Sync)>;
+
 use crate::error::Result;
 use schemars::Schema;
 
@@ -84,6 +86,7 @@ impl ProviderKind {
         schema_name: &str,
         temperature: Option<f64>,
         max_tokens: u32,
+        on_stream: StreamCallback<'_>,
     ) -> Result<RawResponse> {
         match self {
             Self::OpenAi { api_key, base_url } => {
@@ -97,12 +100,14 @@ impl ProviderKind {
                     schema,
                     schema_name,
                     temperature,
+                    on_stream,
                 )
                 .await
             }
             Self::Anthropic { api_key, base_url } => {
                 send_anthropic(
                     http, base_url, api_key, model, system, messages, schema, max_tokens,
+                    on_stream,
                 )
                 .await
             }
