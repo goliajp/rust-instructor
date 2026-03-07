@@ -1,5 +1,28 @@
-use schemars::Schema;
+use std::any::TypeId;
+use std::collections::HashMap;
+
+use schemars::{JsonSchema, Schema};
 use serde_json::{Map, Value};
+
+/// Cached schema generation. Uses thread_local to avoid lock contention
+/// in concurrent batch scenarios.
+pub(crate) fn cached_schema_for<T: JsonSchema + 'static>() -> (Schema, String) {
+    thread_local! {
+        static CACHE: std::cell::RefCell<HashMap<TypeId, (Schema, String)>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| {
+                let schema = schemars::schema_for!(T);
+                let name = T::schema_name().to_string();
+                (schema, name)
+            })
+            .clone()
+    })
+}
 
 /// Convert a schemars Schema to a clean JSON Value with inlined refs.
 pub(crate) fn from_schema(schema: &Schema) -> Value {
