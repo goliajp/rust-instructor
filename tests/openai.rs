@@ -1,4 +1,4 @@
-use instructors::{Client, Error, Validate, ValidationError};
+use instructors::{Client, Error, ImageInput, Validate, ValidationError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use wiremock::matchers::{header, method, path};
@@ -519,4 +519,82 @@ async fn client_with_defaults() {
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Default");
+}
+
+#[tokio::test]
+async fn extract_with_image_url() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "Cat", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("what animal is this?")
+        .image(ImageInput::Url("https://example.com/cat.jpg".into()))
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Cat");
+}
+
+#[tokio::test]
+async fn extract_with_image_base64() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "Dog", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("what animal is this?")
+        .image(ImageInput::Base64 {
+            media_type: "image/jpeg".into(),
+            data: "dGVzdA==".into(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Dog");
+}
+
+#[tokio::test]
+async fn extract_with_multiple_images() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "Comparison", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("compare these images")
+        .images(vec![
+            ImageInput::Url("https://example.com/a.jpg".into()),
+            ImageInput::Url("https://example.com/b.jpg".into()),
+        ])
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Comparison");
 }

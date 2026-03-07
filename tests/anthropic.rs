@@ -1,4 +1,4 @@
-use instructors::{Client, Error, Validate, ValidationError};
+use instructors::{Client, Error, ImageInput, Validate, ValidationError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use wiremock::matchers::{header, method, path};
@@ -300,4 +300,30 @@ async fn custom_model_anthropic() {
         .unwrap();
 
     assert_eq!(result.value.name, "Test");
+}
+
+#[tokio::test]
+async fn extract_with_image_anthropic() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_response(
+            serde_json::json!({"name": "Cat", "email": "cat@test.com"}),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::anthropic_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("what animal is this?")
+        .image(ImageInput::Base64 {
+            media_type: "image/png".into(),
+            data: "dGVzdA==".into(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Cat");
 }

@@ -19,10 +19,21 @@ pub(crate) enum ProviderKind {
     Anthropic { api_key: String, base_url: String },
 }
 
+/// Image input for vision-capable models.
+#[derive(Clone, Debug)]
+pub enum ImageInput {
+    /// Image from a URL (OpenAI and Anthropic both support this).
+    Url(String),
+    /// Base64-encoded image data with its MIME type (e.g. `"image/png"`).
+    Base64 { media_type: String, data: String },
+}
+
 #[derive(Clone, Debug)]
 pub struct Message {
     pub role: String,
     pub content: String,
+    /// Optional images attached to this message.
+    pub images: Vec<ImageInput>,
 }
 
 impl Message {
@@ -31,6 +42,7 @@ impl Message {
         Self {
             role: "user".into(),
             content: content.into(),
+            images: Vec::new(),
         }
     }
 
@@ -39,6 +51,16 @@ impl Message {
         Self {
             role: "assistant".into(),
             content: content.into(),
+            images: Vec::new(),
+        }
+    }
+
+    /// Create a user message with images.
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImageInput>) -> Self {
+        Self {
+            role: "user".into(),
+            content: content.into(),
+            images,
         }
     }
 }
@@ -97,6 +119,7 @@ mod tests {
         let msg = Message::user("hello");
         assert_eq!(msg.role, "user");
         assert_eq!(msg.content, "hello");
+        assert!(msg.images.is_empty());
     }
 
     #[test]
@@ -104,6 +127,7 @@ mod tests {
         let msg = Message::assistant("hi there");
         assert_eq!(msg.role, "assistant");
         assert_eq!(msg.content, "hi there");
+        assert!(msg.images.is_empty());
     }
 
     #[test]
@@ -120,6 +144,31 @@ mod tests {
         let debug = format!("{msg:?}");
         assert!(debug.contains("user"));
         assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn message_user_with_images() {
+        let msg = Message::user_with_images(
+            "describe this",
+            vec![ImageInput::Url("https://example.com/img.png".into())],
+        );
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.images.len(), 1);
+    }
+
+    #[test]
+    fn image_input_clone_and_debug() {
+        let url = ImageInput::Url("https://example.com/img.png".into());
+        let cloned = url.clone();
+        let debug = format!("{cloned:?}");
+        assert!(debug.contains("Url"));
+
+        let b64 = ImageInput::Base64 {
+            media_type: "image/png".into(),
+            data: "abc123".into(),
+        };
+        let debug = format!("{b64:?}");
+        assert!(debug.contains("Base64"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
-use crate::provider::{Message, ProviderKind};
+use crate::provider::{ImageInput, Message, ProviderKind};
 use crate::usage::Usage;
 use crate::validate::{Validate, ValidationError};
 
@@ -223,6 +223,7 @@ impl Client {
             max_tokens: self.default_max_tokens,
             max_retries: self.default_max_retries,
             context: None,
+            images: Vec::new(),
             history: None,
             validator: None,
             on_request: None,
@@ -259,6 +260,7 @@ impl Client {
             max_tokens: self.default_max_tokens,
             max_retries: self.default_max_retries,
             context: None,
+            images: Vec::new(),
             history: None,
             validator: None,
             on_request: None,
@@ -282,6 +284,7 @@ pub struct ExtractBuilder<'a, T> {
     max_tokens: u32,
     max_retries: u32,
     context: Option<String>,
+    images: Vec<ImageInput>,
     history: Option<Vec<Message>>,
     validator: Option<ValidatorFn<T>>,
     on_request: Option<RequestHook>,
@@ -342,6 +345,20 @@ where
             context: Some(ctx.into()),
             ..self
         }
+    }
+
+    /// Add an image to the extraction prompt (for vision-capable models).
+    ///
+    /// Can be called multiple times to add multiple images.
+    pub fn image(mut self, img: ImageInput) -> Self {
+        self.images.push(img);
+        self
+    }
+
+    /// Add multiple images to the extraction prompt.
+    pub fn images(mut self, imgs: Vec<ImageInput>) -> Self {
+        self.images.extend(imgs);
+        self
     }
 
     /// Set prior message history for multi-turn conversations.
@@ -473,6 +490,7 @@ where
             messages.push(Message {
                 role: "user".into(),
                 content: prompt_with_retry.clone(),
+                images: self.images.clone(),
             });
 
             if let Some(ref hook) = self.on_request {
@@ -819,6 +837,41 @@ mod tests {
             .on_response(|_| {});
         assert!(builder.on_request.is_some());
         assert!(builder.on_response.is_some());
+    }
+
+    #[test]
+    fn extract_builder_image() {
+        let client = Client::openai("key");
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct Dummy {
+            x: i32,
+        }
+
+        let builder = client
+            .extract::<Dummy>("describe")
+            .image(ImageInput::Url("https://example.com/img.png".into()))
+            .image(ImageInput::Base64 {
+                media_type: "image/jpeg".into(),
+                data: "abc".into(),
+            });
+        assert_eq!(builder.images.len(), 2);
+    }
+
+    #[test]
+    fn extract_builder_images_batch() {
+        let client = Client::openai("key");
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct Dummy {
+            x: i32,
+        }
+
+        let builder = client.extract::<Dummy>("describe").images(vec![
+            ImageInput::Url("https://a.com/1.png".into()),
+            ImageInput::Url("https://a.com/2.png".into()),
+        ]);
+        assert_eq!(builder.images.len(), 2);
     }
 
     #[test]
