@@ -4,6 +4,8 @@
 [![docs.rs](https://img.shields.io/docsrs/instructors?style=flat-square&logo=docs.rs)](https://docs.rs/instructors)
 [![License](https://img.shields.io/crates/l/instructors?style=flat-square)](LICENSE)
 
+**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+
 Type-safe structured output extraction from LLMs. The Rust [instructor](https://github.com/jxnl/instructor).
 
 Define a Rust struct → instructors generates the JSON Schema → LLM returns valid JSON → you get a typed value. With automatic retry on parse failure.
