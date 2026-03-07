@@ -1,7 +1,7 @@
 use schemars::Schema;
 use serde::{Deserialize, Serialize};
 
-use super::{Message, RawResponse};
+use super::{ImageInput, Message, RawResponse};
 use crate::error::{Error, Result};
 use crate::schema;
 
@@ -19,7 +19,33 @@ struct Request {
 #[derive(Serialize)]
 struct AntMessage {
     role: String,
-    content: String,
+    content: AntContent,
+}
+
+// anthropic accepts either a plain string or an array of content blocks
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AntContent {
+    Text(String),
+    Blocks(Vec<AntContentBlock>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum AntContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: AntImageSource },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum AntImageSource {
+    #[serde(rename = "base64")]
+    Base64 { media_type: String, data: String },
+    #[serde(rename = "url")]
+    Url { url: String },
 }
 
 #[derive(Serialize)]
@@ -56,6 +82,29 @@ struct UsageInfo {
     output_tokens: u32,
 }
 
+fn build_content(msg: &Message) -> AntContent {
+    if msg.images.is_empty() {
+        return AntContent::Text(msg.content.clone());
+    }
+
+    let mut blocks = Vec::with_capacity(msg.images.len() + 1);
+    // images first, then text (anthropic convention)
+    for img in &msg.images {
+        let source = match img {
+            ImageInput::Url(u) => AntImageSource::Url { url: u.clone() },
+            ImageInput::Base64 { media_type, data } => AntImageSource::Base64 {
+                media_type: media_type.clone(),
+                data: data.clone(),
+            },
+        };
+        blocks.push(AntContentBlock::Image { source });
+    }
+    blocks.push(AntContentBlock::Text {
+        text: msg.content.clone(),
+    });
+    AntContent::Blocks(blocks)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_anthropic(
     http: &reqwest::Client,
@@ -71,7 +120,7 @@ pub(crate) async fn send_anthropic(
         .iter()
         .map(|m| AntMessage {
             role: m.role.clone(),
-            content: m.content.clone(),
+            content: build_content(m),
         })
         .collect();
 

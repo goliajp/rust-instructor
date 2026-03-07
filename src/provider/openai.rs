@@ -1,7 +1,7 @@
 use schemars::Schema;
 use serde::{Deserialize, Serialize};
 
-use super::{Message, RawResponse};
+use super::{ImageInput, Message, RawResponse};
 use crate::error::{Error, Result};
 use crate::schema;
 
@@ -17,7 +17,29 @@ struct Request {
 #[derive(Serialize, Deserialize)]
 struct OaiMessage {
     role: String,
-    content: String,
+    content: OaiContent,
+}
+
+// openai accepts either a plain string or an array of content parts
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum OaiContent {
+    Text(String),
+    Parts(Vec<OaiContentPart>),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum OaiContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: OaiImageUrl },
+}
+
+#[derive(Serialize, Deserialize)]
+struct OaiImageUrl {
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +57,29 @@ struct Choice {
 struct UsageInfo {
     prompt_tokens: u32,
     completion_tokens: u32,
+}
+
+fn build_content(msg: &Message) -> OaiContent {
+    if msg.images.is_empty() {
+        return OaiContent::Text(msg.content.clone());
+    }
+
+    let mut parts = Vec::with_capacity(1 + msg.images.len());
+    parts.push(OaiContentPart::Text {
+        text: msg.content.clone(),
+    });
+    for img in &msg.images {
+        let url = match img {
+            ImageInput::Url(u) => u.clone(),
+            ImageInput::Base64 { media_type, data } => {
+                format!("data:{media_type};base64,{data}")
+            }
+        };
+        parts.push(OaiContentPart::ImageUrl {
+            image_url: OaiImageUrl { url },
+        });
+    }
+    OaiContent::Parts(parts)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -57,13 +102,13 @@ pub(crate) async fn send_openai(
     );
     oai_messages.push(OaiMessage {
         role: "system".into(),
-        content: sys.into(),
+        content: OaiContent::Text(sys.into()),
     });
 
     for msg in messages {
         oai_messages.push(OaiMessage {
             role: msg.role.clone(),
-            content: msg.content.clone(),
+            content: build_content(msg),
         });
     }
 
@@ -103,8 +148,19 @@ pub(crate) async fn send_openai(
         completion_tokens: 0,
     });
 
+    let content_text = match choice.message.content {
+        OaiContent::Text(t) => t,
+        OaiContent::Parts(parts) => parts
+            .into_iter()
+            .find_map(|p| match p {
+                OaiContentPart::Text { text } => Some(text),
+                _ => None,
+            })
+            .unwrap_or_default(),
+    };
+
     Ok(RawResponse {
-        content: choice.message.content,
+        content: content_text,
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
     })
