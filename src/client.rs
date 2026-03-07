@@ -176,7 +176,7 @@ impl Client {
 
     /// Begin a batch extraction over multiple prompts with configurable concurrency.
     ///
-    /// Returns a [`BatchBuilder`] that processes prompts concurrently.
+    /// Returns a [`crate::BatchBuilder`] that processes prompts concurrently.
     ///
     /// ```rust,no_run
     /// # use serde::Deserialize;
