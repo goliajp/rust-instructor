@@ -18,7 +18,9 @@ async fn main() -> instructors::Result<()> {
     let client = Client::openai(&api_key);
 
     let result = client
-        .extract::<Summary>("Rust is a systems programming language focused on safety and performance.")
+        .extract::<Summary>(
+            "Rust is a systems programming language focused on safety and performance.",
+        )
         .model("gpt-4o-mini")
         .on_stream(|chunk| {
             print!("{chunk}");

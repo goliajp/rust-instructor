@@ -20,8 +20,7 @@ async fn main() -> instructors::Result<()> {
     let openai_key = std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY");
     let anthropic_key = std::env::var("ANTHROPIC_API_KEY").expect("set ANTHROPIC_API_KEY");
 
-    let client = Client::openai(&openai_key)
-        .with_fallback(Client::anthropic(&anthropic_key));
+    let client = Client::openai(&openai_key).with_fallback(Client::anthropic(&anthropic_key));
 
     // tries OpenAI first; on failure, falls back to Anthropic
     let result = client
