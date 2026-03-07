@@ -1,6 +1,6 @@
 [package]
 name = "instructors"
-version = "0.1.0"
+version = "1.0.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Type-safe structured output extraction from LLMs. The Rust instructor."
