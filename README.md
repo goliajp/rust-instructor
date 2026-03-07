@@ -8,7 +8,7 @@
 
 Type-safe structured output extraction from LLMs. The Rust [instructor](https://github.com/jxnl/instructor).
 
-Define a Rust struct → instructors generates the JSON Schema → LLM returns valid JSON → you get a typed value. With automatic retry on parse failure.
+Define a Rust struct → instructors generates the JSON Schema → LLM returns valid JSON → you get a typed value. With automatic validation and retry.
 
 ## Quick Start
 
@@ -38,7 +38,7 @@ println!("tokens: {}", result.usage.total_tokens);
 
 ```toml
 [dependencies]
-instructors = "0.1"
+instructors = "1"
 ```
 
 ## Providers
@@ -48,6 +48,7 @@ instructors = "0.1"
 | OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
 | Anthropic | `Client::anthropic(key)` | `tool_use` with forced tool choice |
 | OpenAI-compatible | `Client::openai_compatible(key, url)` | Same as OpenAI (DeepSeek, Together, etc.) |
+| Anthropic-compatible | `Client::anthropic_compatible(key, url)` | Same as Anthropic |
 
 ```rust
 // OpenAI
@@ -58,6 +59,110 @@ let client = Client::anthropic("sk-ant-...");
 
 // DeepSeek, Together, or any OpenAI-compatible API
 let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
+
+// Anthropic-compatible proxy
+let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
+```
+
+## Validation
+
+Validate extracted data with automatic retry — invalid results are fed back to the LLM with error details.
+
+### Closure-based
+
+```rust
+let user: User = client.extract("...")
+    .validate(|u: &User| {
+        if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
+    })
+    .await?.value;
+```
+
+### Trait-based
+
+```rust
+use instructors::prelude::*;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Email { address: String }
+
+impl Validate for Email {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.address.contains('@') { Ok(()) }
+        else { Err("invalid email".into()) }
+    }
+}
+
+let email: Email = client.extract("...").validated().await?.value;
+```
+
+## List Extraction
+
+Extract multiple items from text with `extract_many`:
+
+```rust
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Entity {
+    name: String,
+    entity_type: String,
+}
+
+let entities: Vec<Entity> = client
+    .extract_many("Apple CEO Tim Cook met Google CEO Sundar Pichai")
+    .await?.value;
+```
+
+## Batch Processing
+
+Process multiple prompts concurrently with configurable concurrency:
+
+```rust
+let prompts = vec!["review 1".into(), "review 2".into(), "review 3".into()];
+
+let results = client
+    .extract_batch::<Review>(prompts)
+    .concurrency(5)
+    .validate(|r: &Review| { /* ... */ Ok(()) })
+    .run()
+    .await;
+
+// each result is independent — partial failures don't affect others
+for result in results {
+    match result {
+        Ok(r) => println!("{:?}", r.value),
+        Err(e) => eprintln!("failed: {e}"),
+    }
+}
+```
+
+## Multi-turn Conversations
+
+Pass message history for context-aware extraction:
+
+```rust
+use instructors::Message;
+
+let result = client.extract::<Summary>("summarize the above")
+    .messages(vec![
+        Message::user("Here is a long document..."),
+        Message::assistant("I see the document."),
+    ])
+    .await?;
+```
+
+## Lifecycle Hooks
+
+Observe requests and responses:
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_request(|model, prompt| {
+        println!("[req] model={model}, prompt_len={}", prompt.len());
+    })
+    .on_response(|usage| {
+        println!("[res] tokens={}, cost={:?}", usage.total_tokens, usage.cost);
+    })
+    .await?;
 ```
 
 ## Classification
@@ -66,16 +171,11 @@ Enums work naturally for classification tasks:
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
-enum Sentiment {
-    Positive,
-    Negative,
-    Neutral,
-}
+enum Sentiment { Positive, Negative, Neutral }
 
 let sentiment: Sentiment = client
     .extract("This product is amazing!")
-    .await?
-    .value;
+    .await?.value;
 ```
 
 ## Nested Types
@@ -96,11 +196,7 @@ struct Author {
     affiliation: Option<String>,
 }
 
-let paper: Paper = client
-    .extract(&pdf_text)
-    .model("gpt-4o")
-    .await?
-    .value;
+let paper: Paper = client.extract(&pdf_text).model("gpt-4o").await?.value;
 ```
 
 ## Configuration
@@ -112,7 +208,7 @@ let result: MyStruct = client
     .system("You are an expert...")   // custom system prompt
     .temperature(0.0)                 // deterministic output
     .max_tokens(2048)                 // limit output tokens
-    .max_retries(3)                   // retry on parse failure
+    .max_retries(3)                   // retry on parse/validation failure
     .context("extra context...")      // append to prompt
     .await?
     .value;
@@ -139,7 +235,7 @@ let c: TypeC = client.extract("...").model("gpt-4o").await?.value;
 
 ## Cost Tracking
 
-Built-in token counting and cost estimation via [tiktoken](https://github.com/goliajp/tokenrs):
+Built-in token counting and cost estimation via [tiktoken](https://crates.io/crates/tiktoken):
 
 ```rust
 let result = client.extract::<Contact>("...").await?;
@@ -154,18 +250,20 @@ Disable with `default-features = false`:
 
 ```toml
 [dependencies]
-instructors = { version = "0.1", default-features = false }
+instructors = { version = "1", default-features = false }
 ```
 
 ## How It Works
 
 1. `#[derive(JsonSchema)]` generates a JSON Schema from your Rust type (via [schemars](https://crates.io/crates/schemars))
-2. The schema is transformed for the target provider:
+2. Schema is cached per type (thread-local, zero lock contention)
+3. The schema is transformed for the target provider:
    - **OpenAI**: wrapped in `response_format` with strict mode (`additionalProperties: false`, all fields required)
    - **Anthropic**: wrapped as a `tool` with `input_schema`, forced via `tool_choice`
-3. LLM is constrained to produce valid JSON matching the schema
-4. Response is deserialized with `serde_json::from_str::<T>()`
-5. On parse failure, error feedback is sent back and the request is retried
+4. LLM is constrained to produce valid JSON matching the schema
+5. Response is deserialized with `serde_json::from_str::<T>()`
+6. If `Validate` trait or `.validate()` closure is present, validation runs
+7. On parse/validation failure, error feedback is sent back and the request is retried
 
 ## License
 

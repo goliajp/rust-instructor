@@ -6,9 +6,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
-LLMからの型安全な構造化出力抽出。Rust版 [instructor](https://github.com/jxnl/instructor)。
+LLM からの型安全な構造化出力抽出ライブラリ。Rust 版 [instructor](https://github.com/jxnl/instructor)。
 
-Rust構造体を定義 → instructorsがJSON Schemaを自動生成 → LLMが準拠するJSONを返却 → 型付きの値に直接デシリアライズ。パース失敗時は自動リトライ。
+Rust の構造体を定義 → instructors が JSON Schema を生成 → LLM が有効な JSON を返却 → 型付きの値を取得。自動バリデーションとリトライ機能付き。
 
 ## クイックスタート
 
@@ -38,16 +38,17 @@ println!("tokens: {}", result.usage.total_tokens);
 
 ```toml
 [dependencies]
-instructors = "0.1"
+instructors = "1"
 ```
 
-## 対応プロバイダー
+## プロバイダー
 
 | プロバイダー | コンストラクタ | メカニズム |
 |---|---|---|
-| OpenAI | `Client::openai(key)` | `response_format` 厳密JSON Schema |
-| Anthropic | `Client::anthropic(key)` | `tool_use` 強制ツール選択 |
-| OpenAI互換 | `Client::openai_compatible(key, url)` | OpenAIと同じ（DeepSeek、Togetherなど） |
+| OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
+| Anthropic | `Client::anthropic(key)` | `tool_use` による強制ツール選択 |
+| OpenAI 互換 | `Client::openai_compatible(key, url)` | OpenAI と同一方式 (DeepSeek、Together 等) |
+| Anthropic 互換 | `Client::anthropic_compatible(key, url)` | Anthropic と同一方式 |
 
 ```rust
 // OpenAI
@@ -56,31 +57,130 @@ let client = Client::openai("sk-...");
 // Anthropic
 let client = Client::anthropic("sk-ant-...");
 
-// DeepSeek、Together、その他OpenAI互換API
+// DeepSeek、Together、その他 OpenAI 互換 API
 let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
+
+// Anthropic 互換プロキシ
+let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
 ```
 
-## 分類タスク
+## バリデーション
 
-enumは分類タスクに自然に適合します：
+抽出データの自動リトライ付きバリデーション — 無効な結果はエラー詳細と共に LLM にフィードバックされます。
+
+### クロージャベース
+
+```rust
+let user: User = client.extract("...")
+    .validate(|u: &User| {
+        if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
+    })
+    .await?.value;
+```
+
+### トレイトベース
+
+```rust
+use instructors::prelude::*;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Email { address: String }
+
+impl Validate for Email {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.address.contains('@') { Ok(()) }
+        else { Err("invalid email".into()) }
+    }
+}
+
+let email: Email = client.extract("...").validated().await?.value;
+```
+
+## リスト抽出
+
+`extract_many` でテキストから複数のアイテムを抽出:
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
-enum Sentiment {
-    Positive,
-    Negative,
-    Neutral,
+struct Entity {
+    name: String,
+    entity_type: String,
 }
+
+let entities: Vec<Entity> = client
+    .extract_many("Apple CEO Tim Cook met Google CEO Sundar Pichai")
+    .await?.value;
+```
+
+## バッチ処理
+
+設定可能な並行数で複数のプロンプトを同時処理:
+
+```rust
+let prompts = vec!["review 1".into(), "review 2".into(), "review 3".into()];
+
+let results = client
+    .extract_batch::<Review>(prompts)
+    .concurrency(5)
+    .validate(|r: &Review| { /* ... */ Ok(()) })
+    .run()
+    .await;
+
+// 各結果は独立 — 部分的な失敗は他に影響しません
+for result in results {
+    match result {
+        Ok(r) => println!("{:?}", r.value),
+        Err(e) => eprintln!("failed: {e}"),
+    }
+}
+```
+
+## マルチターン会話
+
+メッセージ履歴を渡してコンテキストを考慮した抽出を実行:
+
+```rust
+use instructors::Message;
+
+let result = client.extract::<Summary>("summarize the above")
+    .messages(vec![
+        Message::user("Here is a long document..."),
+        Message::assistant("I see the document."),
+    ])
+    .await?;
+```
+
+## ライフサイクルフック
+
+リクエストとレスポンスを監視:
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_request(|model, prompt| {
+        println!("[req] model={model}, prompt_len={}", prompt.len());
+    })
+    .on_response(|usage| {
+        println!("[res] tokens={}, cost={:?}", usage.total_tokens, usage.cost);
+    })
+    .await?;
+```
+
+## 分類
+
+列挙型は分類タスクに自然に対応します:
+
+```rust
+#[derive(Debug, Deserialize, JsonSchema)]
+enum Sentiment { Positive, Negative, Neutral }
 
 let sentiment: Sentiment = client
     .extract("This product is amazing!")
-    .await?
-    .value;
+    .await?.value;
 ```
 
-## ネスト型
+## ネストされた型
 
-Vec、Option、enumを含む複雑なネスト構造に対応：
+ベクタ、オプション、列挙型を含む複雑なネスト構造:
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -96,11 +196,7 @@ struct Author {
     affiliation: Option<String>,
 }
 
-let paper: Paper = client
-    .extract(&pdf_text)
-    .model("gpt-4o")
-    .await?
-    .value;
+let paper: Paper = client.extract(&pdf_text).model("gpt-4o").await?.value;
 ```
 
 ## 設定
@@ -108,19 +204,19 @@ let paper: Paper = client
 ```rust
 let result: MyStruct = client
     .extract("input text")
-    .model("gpt-4o-mini")            // モデル指定
+    .model("gpt-4o-mini")            // モデルを上書き
     .system("You are an expert...")   // カスタムシステムプロンプト
-    .temperature(0.0)                 // 確定的出力
-    .max_tokens(2048)                 // 出力トークン数制限
-    .max_retries(3)                   // パース失敗時のリトライ回数
-    .context("extra context...")      // 追加コンテキスト
+    .temperature(0.0)                 // 決定的な出力
+    .max_tokens(2048)                 // 出力トークン数の上限
+    .max_retries(3)                   // パース/バリデーション失敗時のリトライ回数
+    .context("extra context...")      // プロンプトに追加コンテキストを付与
     .await?
     .value;
 ```
 
 ## クライアントデフォルト
 
-デフォルト値を一度設定し、個別リクエストで必要に応じてオーバーライド：
+デフォルトを一度設定し、リクエストごとに上書き可能:
 
 ```rust
 let client = Client::openai("sk-...")
@@ -129,17 +225,17 @@ let client = Client::openai("sk-...")
     .with_max_retries(3)
     .with_system("Extract data precisely.");
 
-// すべての抽出リクエストで上記のデフォルト値を使用
+// すべての抽出で上記のデフォルトが使用されます
 let a: TypeA = client.extract("...").await?.value;
 let b: TypeB = client.extract("...").await?.value;
 
-// 特定のリクエストでオーバーライド
+// 特定のリクエストでのみ上書き
 let c: TypeC = client.extract("...").model("gpt-4o").await?.value;
 ```
 
 ## コスト追跡
 
-[tiktoken](https://crates.io/crates/tiktoken) によるトークンカウントとコスト推定を内蔵：
+[tiktoken](https://crates.io/crates/tiktoken) によるトークンカウントとコスト推定を内蔵:
 
 ```rust
 let result = client.extract::<Contact>("...").await?;
@@ -150,22 +246,24 @@ println!("cost:   ${:.6}", result.usage.cost.unwrap_or(0.0));
 println!("retries: {}", result.usage.retries);
 ```
 
-不要な場合は `default-features = false` で無効化：
+`default-features = false` で無効化:
 
 ```toml
 [dependencies]
-instructors = { version = "0.1", default-features = false }
+instructors = { version = "1", default-features = false }
 ```
 
 ## 仕組み
 
-1. `#[derive(JsonSchema)]` が [schemars](https://crates.io/crates/schemars) を通じてRust型からJSON Schemaを生成
-2. Schemaが対象プロバイダー向けに変換される：
-   - **OpenAI**: `response_format` にラップ、strictモード有効（`additionalProperties: false`、全フィールドrequired）
-   - **Anthropic**: `tool` としてラップ、`tool_choice` で強制実行
-3. LLMはSchemaに準拠した有効なJSONのみを出力するよう制約される
-4. レスポンスは `serde_json::from_str::<T>()` でデシリアライズ
-5. パース失敗時、エラー情報をLLMにフィードバックしてリトライ
+1. `#[derive(JsonSchema)]` が Rust の型から JSON Schema を生成 ([schemars](https://crates.io/crates/schemars) を利用)
+2. スキーマは型ごとにキャッシュ (スレッドローカル、ロック競合なし)
+3. スキーマはターゲットプロバイダー向けに変換:
+   - **OpenAI**: `response_format` に strict モードでラップ (`additionalProperties: false`、全フィールド必須)
+   - **Anthropic**: `tool` として `input_schema` にラップし、`tool_choice` で強制
+4. LLM はスキーマに一致する有効な JSON の出力に制約
+5. レスポンスは `serde_json::from_str::<T>()` でデシリアライズ
+6. `Validate` トレイトまたは `.validate()` クロージャが設定されている場合、バリデーションを実行
+7. パースまたはバリデーションの失敗時、エラーフィードバックを送信してリクエストをリトライ
 
 ## ライセンス
 
