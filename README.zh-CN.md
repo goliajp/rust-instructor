@@ -4,13 +4,13 @@
 [![docs.rs](https://img.shields.io/docsrs/instructors?style=flat-square&logo=docs.rs)](https://docs.rs/instructors)
 [![License](https://img.shields.io/crates/l/instructors?style=flat-square)](LICENSE)
 
-**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+[English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-Type-safe structured output extraction from LLMs. The Rust [instructor](https://github.com/jxnl/instructor).
+类型安全的 LLM 结构化输出提取。Rust 版 [instructor](https://github.com/jxnl/instructor)。
 
-Define a Rust struct → instructors generates the JSON Schema → LLM returns valid JSON → you get a typed value. With automatic retry on parse failure.
+定义一个 Rust 结构体 → instructors 自动生成 JSON Schema → LLM 返回合规 JSON → 直接反序列化为类型化的值。解析失败时自动重试。
 
-## Quick Start
+## 快速开始
 
 ```rust
 use instructors::prelude::*;
@@ -34,20 +34,20 @@ println!("{:?}", result.value.email);    // Some("john@example.com")
 println!("tokens: {}", result.usage.total_tokens);
 ```
 
-## Installation
+## 安装
 
 ```toml
 [dependencies]
 instructors = "0.1"
 ```
 
-## Providers
+## 支持的供应商
 
-| Provider | Constructor | Mechanism |
+| 供应商 | 构造方法 | 机制 |
 |---|---|---|
-| OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
-| Anthropic | `Client::anthropic(key)` | `tool_use` with forced tool choice |
-| OpenAI-compatible | `Client::openai_compatible(key, url)` | Same as OpenAI (DeepSeek, Together, etc.) |
+| OpenAI | `Client::openai(key)` | `response_format` 严格 JSON Schema |
+| Anthropic | `Client::anthropic(key)` | `tool_use` 强制工具调用 |
+| OpenAI 兼容 | `Client::openai_compatible(key, url)` | 同 OpenAI（DeepSeek、Together 等） |
 
 ```rust
 // OpenAI
@@ -56,13 +56,13 @@ let client = Client::openai("sk-...");
 // Anthropic
 let client = Client::anthropic("sk-ant-...");
 
-// DeepSeek, Together, or any OpenAI-compatible API
+// DeepSeek、Together 或任何 OpenAI 兼容 API
 let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
 ```
 
-## Classification
+## 分类任务
 
-Enums work naturally for classification tasks:
+枚举天然适用于分类场景：
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -78,9 +78,9 @@ let sentiment: Sentiment = client
     .value;
 ```
 
-## Nested Types
+## 嵌套类型
 
-Complex nested structures with vectors, options, and enums:
+支持复杂的嵌套结构——Vec、Option、枚举均可：
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -103,24 +103,24 @@ let paper: Paper = client
     .value;
 ```
 
-## Configuration
+## 配置
 
 ```rust
 let result: MyStruct = client
     .extract("input text")
-    .model("gpt-4o-mini")            // override model
-    .system("You are an expert...")   // custom system prompt
-    .temperature(0.0)                 // deterministic output
-    .max_tokens(2048)                 // limit output tokens
-    .max_retries(3)                   // retry on parse failure
-    .context("extra context...")      // append to prompt
+    .model("gpt-4o-mini")            // 指定模型
+    .system("You are an expert...")   // 自定义系统提示
+    .temperature(0.0)                 // 确定性输出
+    .max_tokens(2048)                 // 限制输出 token 数
+    .max_retries(3)                   // 解析失败时重试次数
+    .context("extra context...")      // 追加上下文
     .await?
     .value;
 ```
 
-## Client Defaults
+## 客户端默认值
 
-Set defaults once, override per-request:
+设置一次默认值，按需在单个请求中覆盖：
 
 ```rust
 let client = Client::openai("sk-...")
@@ -129,17 +129,17 @@ let client = Client::openai("sk-...")
     .with_max_retries(3)
     .with_system("Extract data precisely.");
 
-// all extractions use the defaults above
+// 所有提取请求使用上述默认值
 let a: TypeA = client.extract("...").await?.value;
 let b: TypeB = client.extract("...").await?.value;
 
-// override for a specific request
+// 在特定请求中覆盖
 let c: TypeC = client.extract("...").model("gpt-4o").await?.value;
 ```
 
-## Cost Tracking
+## 成本追踪
 
-Built-in token counting and cost estimation via [tiktoken](https://github.com/goliajp/tokenrs):
+内置 token 计数和成本估算（基于 [tiktoken](https://crates.io/crates/tiktoken)）：
 
 ```rust
 let result = client.extract::<Contact>("...").await?;
@@ -150,23 +150,23 @@ println!("cost:   ${:.6}", result.usage.cost.unwrap_or(0.0));
 println!("retries: {}", result.usage.retries);
 ```
 
-Disable with `default-features = false`:
+不需要时可通过 `default-features = false` 禁用：
 
 ```toml
 [dependencies]
 instructors = { version = "0.1", default-features = false }
 ```
 
-## How It Works
+## 工作原理
 
-1. `#[derive(JsonSchema)]` generates a JSON Schema from your Rust type (via [schemars](https://crates.io/crates/schemars))
-2. The schema is transformed for the target provider:
-   - **OpenAI**: wrapped in `response_format` with strict mode (`additionalProperties: false`, all fields required)
-   - **Anthropic**: wrapped as a `tool` with `input_schema`, forced via `tool_choice`
-3. LLM is constrained to produce valid JSON matching the schema
-4. Response is deserialized with `serde_json::from_str::<T>()`
-5. On parse failure, error feedback is sent back and the request is retried
+1. `#[derive(JsonSchema)]` 通过 [schemars](https://crates.io/crates/schemars) 从 Rust 类型生成 JSON Schema
+2. Schema 根据目标供应商进行转换：
+   - **OpenAI**：封装为 `response_format`，启用严格模式（`additionalProperties: false`，所有字段 required）
+   - **Anthropic**：封装为 `tool`，通过 `tool_choice` 强制调用
+3. LLM 被约束只能生成符合 Schema 的有效 JSON
+4. 响应通过 `serde_json::from_str::<T>()` 反序列化
+5. 解析失败时，错误信息反馈给 LLM 并重试
 
-## License
+## 许可证
 
 [MIT](LICENSE)
