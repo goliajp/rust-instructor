@@ -192,6 +192,45 @@ impl Client {
         crate::batch::BatchBuilder::new(self, prompts)
     }
 
+    /// Extract a list of items from the prompt.
+    ///
+    /// Internally wraps the target type in a `Vec<T>` for the LLM to populate.
+    ///
+    /// ```rust,no_run
+    /// # use serde::Deserialize;
+    /// # use schemars::JsonSchema;
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Entity { name: String, entity_type: String }
+    ///
+    /// # async fn run() -> instructors::Result<()> {
+    /// let client = instructors::Client::openai("sk-...");
+    /// let entities: Vec<Entity> = client
+    ///     .extract_many("Apple CEO Tim Cook met with Google CEO Sundar Pichai")
+    ///     .await?.value;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn extract_many<T>(&self, prompt: impl Into<String>) -> ExtractBuilder<'_, Vec<T>>
+    where
+        T: DeserializeOwned + JsonSchema,
+    {
+        ExtractBuilder {
+            client: self,
+            prompt: prompt.into(),
+            model: self.default_model.clone(),
+            system: self.default_system.clone(),
+            temperature: self.default_temperature,
+            max_tokens: self.default_max_tokens,
+            max_retries: self.default_max_retries,
+            context: None,
+            history: None,
+            validator: None,
+            on_request: None,
+            on_response: None,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Begin an extraction request. The return type `T` must implement
     /// [`serde::Deserialize`] and [`schemars::JsonSchema`].
     ///
@@ -220,7 +259,10 @@ impl Client {
             max_tokens: self.default_max_tokens,
             max_retries: self.default_max_retries,
             context: None,
+            history: None,
             validator: None,
+            on_request: None,
+            on_response: None,
             _phantom: PhantomData,
         }
     }
@@ -240,9 +282,15 @@ pub struct ExtractBuilder<'a, T> {
     max_tokens: u32,
     max_retries: u32,
     context: Option<String>,
+    history: Option<Vec<Message>>,
     validator: Option<ValidatorFn<T>>,
+    on_request: Option<RequestHook>,
+    on_response: Option<ResponseHook>,
     _phantom: PhantomData<T>,
 }
+
+type RequestHook = Box<dyn Fn(&str, &str) + Send + Sync>;
+type ResponseHook = Box<dyn Fn(&Usage) + Send + Sync>;
 
 impl<T> ExtractBuilder<'_, T>
 where
@@ -292,6 +340,62 @@ where
     pub fn context(self, ctx: impl Into<String>) -> Self {
         Self {
             context: Some(ctx.into()),
+            ..self
+        }
+    }
+
+    /// Set prior message history for multi-turn conversations.
+    ///
+    /// Messages are prepended before the extraction prompt.
+    ///
+    /// ```rust,no_run
+    /// # use serde::Deserialize;
+    /// # use schemars::JsonSchema;
+    /// use instructors::Message;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Summary { text: String }
+    ///
+    /// # async fn run() -> instructors::Result<()> {
+    /// let client = instructors::Client::openai("sk-...");
+    /// let result = client.extract::<Summary>("summarize the above")
+    ///     .messages(vec![
+    ///         Message::user("Here is a long document..."),
+    ///         Message::assistant("I see the document."),
+    ///     ])
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn messages(self, msgs: Vec<Message>) -> Self {
+        Self {
+            history: Some(msgs),
+            ..self
+        }
+    }
+
+    /// Register a hook called before each API request.
+    ///
+    /// Receives `(model, prompt)`.
+    pub fn on_request<F>(self, f: F) -> Self
+    where
+        F: Fn(&str, &str) + Send + Sync + 'static,
+    {
+        Self {
+            on_request: Some(Box::new(f)),
+            ..self
+        }
+    }
+
+    /// Register a hook called after a successful extraction.
+    ///
+    /// Receives the final `Usage`.
+    pub fn on_response<F>(self, f: F) -> Self
+    where
+        F: Fn(&Usage) + Send + Sync + 'static,
+    {
+        Self {
+            on_response: Some(Box::new(f)),
             ..self
         }
     }
@@ -357,10 +461,18 @@ where
                 )
             };
 
-            let messages = vec![Message {
+            let mut messages = Vec::new();
+            if let Some(ref history) = self.history {
+                messages.extend(history.iter().cloned());
+            }
+            messages.push(Message {
                 role: "user".into(),
-                content: prompt_with_retry,
-            }];
+                content: prompt_with_retry.clone(),
+            });
+
+            if let Some(ref hook) = self.on_request {
+                hook(model, &prompt_with_retry);
+            }
 
             let raw = self
                 .client
@@ -410,6 +522,9 @@ where
                     usage.input_tokens as u64,
                     usage.output_tokens as u64,
                 );
+            }
+            if let Some(ref hook) = self.on_response {
+                hook(&usage);
             }
             return Ok(ExtractResult { value, usage });
         }

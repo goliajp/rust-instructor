@@ -20,9 +20,27 @@ pub(crate) enum ProviderKind {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Message {
+pub struct Message {
     pub role: String,
     pub content: String,
+}
+
+impl Message {
+    /// Create a user message.
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
+    }
+
+    /// Create an assistant message.
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+        }
+    }
 }
 
 impl ProviderKind {
@@ -67,5 +85,58 @@ impl ProviderKind {
                 .await
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_user() {
+        let msg = Message::user("hello");
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content, "hello");
+    }
+
+    #[test]
+    fn message_assistant() {
+        let msg = Message::assistant("hi there");
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content, "hi there");
+    }
+
+    #[test]
+    fn message_clone() {
+        let msg = Message::user("test");
+        let cloned = msg.clone();
+        assert_eq!(cloned.role, msg.role);
+        assert_eq!(cloned.content, msg.content);
+    }
+
+    #[test]
+    fn message_debug() {
+        let msg = Message::user("test");
+        let debug = format!("{msg:?}");
+        assert!(debug.contains("user"));
+        assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn default_model_openai() {
+        let provider = ProviderKind::OpenAi {
+            api_key: "key".into(),
+            base_url: "url".into(),
+        };
+        assert_eq!(provider.default_model(), "gpt-4o");
+    }
+
+    #[test]
+    fn default_model_anthropic() {
+        let provider = ProviderKind::Anthropic {
+            api_key: "key".into(),
+            base_url: "url".into(),
+        };
+        assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
     }
 }
