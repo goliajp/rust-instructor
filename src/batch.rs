@@ -34,11 +34,11 @@ where
         Self {
             client,
             prompts,
-            model: None,
-            system: None,
-            temperature: None,
-            max_tokens: 4096,
-            max_retries: 2,
+            model: client.default_model.clone(),
+            system: client.default_system.clone(),
+            temperature: client.default_temperature,
+            max_tokens: client.default_max_tokens,
+            max_retries: client.default_max_retries,
             concurrency: 5,
             validator: None,
             _phantom: PhantomData,
@@ -131,7 +131,7 @@ where
 
                 async move {
                     let _permit: tokio::sync::OwnedSemaphorePermit =
-                        sem.clone().acquire_owned().await.unwrap();
+                        sem.acquire_owned().await.unwrap();
                     let mut builder = client.extract::<T>(prompt);
                     if let Some(m) = model {
                         builder = builder.model(m);
@@ -161,8 +161,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builder_defaults() {
-        let client = Client::openai("key");
+    fn builder_inherits_client_defaults() {
+        let client = Client::openai("key")
+            .with_model("gpt-4o-mini")
+            .with_system("extract data")
+            .with_temperature(0.5)
+            .with_max_retries(5)
+            .with_max_tokens(2048);
 
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
@@ -171,11 +176,31 @@ mod tests {
 
         let builder = BatchBuilder::<D>::new(&client, vec!["a".into(), "b".into()]);
         assert_eq!(builder.concurrency, 5);
-        assert_eq!(builder.max_retries, 2);
-        assert_eq!(builder.max_tokens, 4096);
-        assert!(builder.model.is_none());
+        assert_eq!(builder.max_retries, 5);
+        assert_eq!(builder.max_tokens, 2048);
+        assert_eq!(builder.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(builder.system.as_deref(), Some("extract data"));
+        assert_eq!(builder.temperature, Some(0.5));
         assert!(builder.validator.is_none());
         assert_eq!(builder.prompts.len(), 2);
+    }
+
+    #[test]
+    fn builder_defaults_without_client_overrides() {
+        let client = Client::openai("key");
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct D {
+            x: i32,
+        }
+
+        let builder = BatchBuilder::<D>::new(&client, vec!["a".into()]);
+        // inherits client defaults
+        assert_eq!(builder.max_retries, 2);
+        assert_eq!(builder.max_tokens, 4096);
+        assert_eq!(builder.temperature, Some(0.0));
+        assert!(builder.model.is_none());
+        assert!(builder.system.is_none());
     }
 
     #[test]

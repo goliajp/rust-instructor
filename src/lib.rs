@@ -55,11 +55,16 @@
 //! # }
 //! ```
 //!
-//! ## Providers
+//! ## Features
 //!
-//! - **OpenAI** — uses `response_format` with `json_schema` (strict mode)
-//! - **Anthropic** — uses `tool_use` with forced tool choice
-//! - **OpenAI-compatible** — any API implementing the OpenAI chat completions format
+//! - **Multi-provider** — OpenAI (`response_format` strict), Anthropic (`tool_use`),
+//!   plus any OpenAI/Anthropic-compatible API
+//! - **List extraction** — `extract_many::<T>()` returns `Vec<T>`
+//! - **Batch processing** — `extract_batch::<T>()` with configurable concurrency
+//! - **Multi-turn** — `.messages()` for conversation history
+//! - **Validation** — closure-based `.validate()` or trait-based `.validated()`
+//! - **Lifecycle hooks** — `.on_request()` / `.on_response()`
+//! - **Cost tracking** — token counting and cost estimation via `tiktoken` (optional)
 
 mod batch;
 mod client;

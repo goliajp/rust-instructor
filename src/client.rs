@@ -27,11 +27,11 @@ pub struct ExtractResult<T> {
 pub struct Client {
     http: reqwest::Client,
     pub(crate) provider: ProviderKind,
-    default_model: Option<String>,
-    default_system: Option<String>,
-    default_max_retries: u32,
-    default_temperature: Option<f64>,
-    default_max_tokens: u32,
+    pub(crate) default_model: Option<String>,
+    pub(crate) default_system: Option<String>,
+    pub(crate) default_max_retries: u32,
+    pub(crate) default_temperature: Option<f64>,
+    pub(crate) default_max_tokens: u32,
 }
 
 impl Client {
@@ -449,6 +449,13 @@ where
         let mut usage = Usage::default();
         let mut last_error = String::new();
 
+        // pre-clone history once outside the retry loop
+        let history: Vec<Message> = self
+            .history
+            .as_ref()
+            .map(|h| h.to_vec())
+            .unwrap_or_default();
+
         for attempt in 0..=self.max_retries {
             let prompt_with_retry = if attempt == 0 {
                 user_content.clone()
@@ -461,10 +468,8 @@ where
                 )
             };
 
-            let mut messages = Vec::new();
-            if let Some(ref history) = self.history {
-                messages.extend(history.iter().cloned());
-            }
+            let mut messages = Vec::with_capacity(history.len() + 1);
+            messages.extend(history.iter().cloned());
             messages.push(Message {
                 role: "user".into(),
                 content: prompt_with_retry.clone(),
@@ -752,6 +757,68 @@ mod tests {
         assert_eq!(builder.max_tokens, 1024);
         assert_eq!(builder.max_retries, 5);
         assert_eq!(builder.context.as_deref(), Some("extra info"));
+    }
+
+    #[test]
+    fn client_anthropic_compatible() {
+        let client = Client::anthropic_compatible("key", "https://proxy.example.com/v1");
+        match &client.provider {
+            ProviderKind::Anthropic { base_url, .. } => {
+                assert_eq!(base_url, "https://proxy.example.com/v1");
+            }
+            _ => panic!("expected Anthropic provider"),
+        }
+    }
+
+    #[test]
+    fn extract_many_inherits_defaults() {
+        let client = Client::openai("key")
+            .with_model("gpt-4o-mini")
+            .with_system("custom")
+            .with_temperature(0.7);
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct Item {
+            x: i32,
+        }
+
+        let builder = client.extract_many::<Item>("test");
+        assert_eq!(builder.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(builder.system.as_deref(), Some("custom"));
+        assert_eq!(builder.temperature, Some(0.7));
+    }
+
+    #[test]
+    fn extract_builder_messages() {
+        let client = Client::openai("key");
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct Dummy {
+            x: i32,
+        }
+
+        let builder = client
+            .extract::<Dummy>("test")
+            .messages(vec![Message::user("hello"), Message::assistant("hi")]);
+        assert!(builder.history.is_some());
+        assert_eq!(builder.history.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn extract_builder_hooks() {
+        let client = Client::openai("key");
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct Dummy {
+            x: i32,
+        }
+
+        let builder = client
+            .extract::<Dummy>("test")
+            .on_request(|_, _| {})
+            .on_response(|_| {});
+        assert!(builder.on_request.is_some());
+        assert!(builder.on_response.is_some());
     }
 
     #[test]
