@@ -21,7 +21,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 futures = "0.3"
 tokio = { version = "1", features = ["sync"] }
 thiserror = "2"
-tiktoken = { path = "../tiktoken", version = "3.0.0", optional = true }
+tiktoken = { path = "../tiktoken", version = "3.1.0", optional = true }
 
 [features]
 default = ["cost-tracking"]
