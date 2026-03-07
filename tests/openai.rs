@@ -601,6 +601,100 @@ async fn extract_with_multiple_images() {
     assert_eq!(result.value.name, "Comparison");
 }
 
+#[tokio::test]
+async fn fallback_to_second_provider() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    // primary returns 500
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+        .expect(1)
+        .mount(&primary)
+        .await;
+
+    // fallback succeeds
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "Fallback", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    let client = Client::openai_compatible("key", &primary.uri())
+        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+
+    let result = client.extract::<Contact>("test").await.unwrap();
+    assert_eq!(result.value.name, "Fallback");
+}
+
+#[tokio::test]
+async fn fallback_not_used_on_success() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "Primary", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&primary)
+        .await;
+
+    // fallback should NOT be called
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "Fallback", "email": null}"#)),
+        )
+        .expect(0)
+        .mount(&fallback)
+        .await;
+
+    let client = Client::openai_compatible("key", &primary.uri())
+        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+
+    let result = client.extract::<Contact>("test").await.unwrap();
+    assert_eq!(result.value.name, "Primary");
+}
+
+#[tokio::test]
+async fn fallback_chain_all_fail() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("error"))
+        .mount(&primary)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+        .mount(&fallback)
+        .await;
+
+    let client = Client::openai_compatible("key", &primary.uri())
+        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+
+    let err = client
+        .extract::<Contact>("test")
+        .max_retries(0)
+        .await
+        .unwrap_err();
+
+    // should return the primary error
+    assert!(matches!(err, Error::Api { status: 500, .. }));
+}
+
 fn openai_stream_chunks(json_content: &str) -> String {
     // simulate SSE streaming by splitting JSON content char-by-char
     let mut sse = String::new();
@@ -657,7 +751,10 @@ async fn extract_with_streaming() {
     assert_eq!(result.usage.output_tokens, 10);
 
     let collected = chunks.lock().unwrap();
-    assert!(!collected.is_empty(), "stream callback should have been called");
+    assert!(
+        !collected.is_empty(),
+        "stream callback should have been called"
+    );
     let reassembled: String = collected.iter().cloned().collect();
     assert_eq!(reassembled, json_content);
 }

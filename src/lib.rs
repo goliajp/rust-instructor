@@ -92,8 +92,7 @@ pub use serde;
 /// ```
 pub mod prelude {
     pub use crate::{
-        BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate,
-        ValidationError,
+        BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate, ValidationError,
     };
     pub use schemars::JsonSchema;
     pub use serde::Deserialize;

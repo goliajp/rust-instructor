@@ -348,7 +348,9 @@ fn anthropic_stream_events(json_content: &str) -> String {
         "index": 0,
         "content_block": { "type": "tool_use", "id": "toolu_test", "name": "extract", "input": {} }
     });
-    sse.push_str(&format!("event: content_block_start\ndata: {block_start}\n\n"));
+    sse.push_str(&format!(
+        "event: content_block_start\ndata: {block_start}\n\n"
+    ));
 
     // stream JSON char-by-char as input_json_delta
     for ch in json_content.chars() {
@@ -415,4 +417,42 @@ async fn extract_with_streaming_anthropic() {
     assert!(!collected.is_empty());
     let reassembled: String = collected.iter().cloned().collect();
     assert_eq!(reassembled, json_content);
+}
+
+#[tokio::test]
+async fn cross_provider_fallback_openai_to_anthropic() {
+    use wiremock::matchers::path;
+
+    let openai_server = MockServer::start().await;
+    let anthropic_server = MockServer::start().await;
+
+    // openai returns 429 (rate limit)
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .expect(1)
+        .mount(&openai_server)
+        .await;
+
+    // anthropic succeeds
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_response(
+            serde_json::json!({"name": "Cross", "email": "cross@test.com"}),
+        )))
+        .expect(1)
+        .mount(&anthropic_server)
+        .await;
+
+    let client = Client::openai_compatible("key", &openai_server.uri()).with_fallback(
+        Client::anthropic_compatible("ant-key", &anthropic_server.uri()),
+    );
+
+    let result = client
+        .extract::<Contact>("test")
+        .max_retries(0)
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Cross");
 }

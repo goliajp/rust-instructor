@@ -106,8 +106,7 @@ impl ProviderKind {
             }
             Self::Anthropic { api_key, base_url } => {
                 send_anthropic(
-                    http, base_url, api_key, model, system, messages, schema, max_tokens,
-                    on_stream,
+                    http, base_url, api_key, model, system, messages, schema, max_tokens, on_stream,
                 )
                 .await
             }
