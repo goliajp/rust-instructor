@@ -32,6 +32,7 @@ pub struct Client {
     pub(crate) default_max_retries: u32,
     pub(crate) default_temperature: Option<f64>,
     pub(crate) default_max_tokens: u32,
+    fallbacks: Vec<Client>,
 }
 
 impl Client {
@@ -52,6 +53,7 @@ impl Client {
             default_max_retries: 2,
             default_temperature: Some(0.0),
             default_max_tokens: 4096,
+            fallbacks: Vec::new(),
         }
     }
 
@@ -72,6 +74,7 @@ impl Client {
             default_max_retries: 2,
             default_temperature: None,
             default_max_tokens: 4096,
+            fallbacks: Vec::new(),
         }
     }
 
@@ -95,6 +98,7 @@ impl Client {
             default_max_retries: 2,
             default_temperature: None,
             default_max_tokens: 4096,
+            fallbacks: Vec::new(),
         }
     }
 
@@ -118,6 +122,7 @@ impl Client {
             default_max_retries: 2,
             default_temperature: Some(0.0),
             default_max_tokens: 4096,
+            fallbacks: Vec::new(),
         }
     }
 
@@ -151,6 +156,14 @@ impl Client {
             default_temperature: Some(temp),
             ..self
         }
+    }
+
+    /// Add a fallback client. If the primary provider fails after exhausting
+    /// retries, the request is retried using the fallback client. Multiple
+    /// fallbacks can be chained and are tried in order.
+    pub fn with_fallback(mut self, fallback: Client) -> Self {
+        self.fallbacks.push(fallback);
+        self
     }
 
     /// Set the default max output tokens.
@@ -187,7 +200,7 @@ impl Client {
     /// ```
     pub fn extract_batch<T>(&self, prompts: Vec<String>) -> crate::batch::BatchBuilder<'_, T>
     where
-        T: DeserializeOwned + JsonSchema + Send + 'static,
+        T: DeserializeOwned + JsonSchema + Send + Sync + 'static,
     {
         crate::batch::BatchBuilder::new(self, prompts)
     }
@@ -469,6 +482,27 @@ where
     where
         T: 'static,
     {
+        // try primary provider
+        let result = self.try_provider(self.client).await;
+
+        // on failure, try fallbacks in order
+        match result {
+            Ok(ok) => Ok(ok),
+            Err(primary_err) => {
+                for fallback in &self.client.fallbacks {
+                    if let Ok(ok) = self.try_provider(fallback).await {
+                        return Ok(ok);
+                    }
+                }
+                Err(primary_err)
+            }
+        }
+    }
+
+    async fn try_provider(&self, client: &Client) -> Result<ExtractResult<T>>
+    where
+        T: 'static,
+    {
         let (root_schema, schema_name) = crate::schema::cached_schema_for::<T>();
 
         let mut user_content = self.prompt.clone();
@@ -479,7 +513,7 @@ where
         let model = self
             .model
             .as_deref()
-            .unwrap_or(self.client.provider.default_model());
+            .unwrap_or(client.provider.default_model());
         let system = self.system.as_deref();
 
         let mut usage = Usage::default();
@@ -516,11 +550,10 @@ where
                 hook(model, &prompt_with_retry);
             }
 
-            let raw = self
-                .client
+            let raw = client
                 .provider
                 .send(
-                    &self.client.http,
+                    &client.http,
                     model,
                     system,
                     &messages,
@@ -627,7 +660,7 @@ where
 
 impl<'a, T> IntoFuture for ExtractBuilder<'a, T>
 where
-    T: DeserializeOwned + JsonSchema + Send + 'static,
+    T: DeserializeOwned + JsonSchema + Send + Sync + 'static,
 {
     type Output = Result<ExtractResult<T>>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
@@ -892,6 +925,17 @@ mod tests {
             ImageInput::Url("https://a.com/2.png".into()),
         ]);
         assert_eq!(builder.images.len(), 2);
+    }
+
+    #[test]
+    fn client_with_fallback() {
+        let client = Client::openai("key")
+            .with_fallback(Client::anthropic("ant-key"))
+            .with_fallback(Client::openai_compatible(
+                "key2",
+                "https://backup.example.com",
+            ));
+        assert_eq!(client.fallbacks.len(), 2);
     }
 
     #[test]

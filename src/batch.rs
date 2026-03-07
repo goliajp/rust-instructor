@@ -28,7 +28,7 @@ pub struct BatchBuilder<'a, T> {
 
 impl<'a, T> BatchBuilder<'a, T>
 where
-    T: DeserializeOwned + JsonSchema + Send + 'static,
+    T: DeserializeOwned + JsonSchema + Send + Sync + 'static,
 {
     pub(crate) fn new(client: &'a Client, prompts: Vec<String>) -> Self {
         Self {
