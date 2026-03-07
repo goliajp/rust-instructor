@@ -150,6 +150,65 @@ let result = client.extract::<Summary>("summarize the above")
     .await?;
 ```
 
+## ストリーミング
+
+部分的な JSON トークンをリアルタイムで受信：
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_stream(|chunk| {
+        print!("{chunk}");  // 部分的な JSON フラグメント
+    })
+    .await?;
+```
+
+OpenAI と Anthropic の両プロバイダーでストリーミングをサポート。最終結果はすべてのチャンクを結合してデシリアライズされます。
+
+## 画像入力
+
+ビジョン対応モデルを使って画像から構造化データを抽出：
+
+```rust
+use instructors::ImageInput;
+
+// URL から
+let result = client.extract::<Description>("この画像を説明してください")
+    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .model("gpt-4o")
+    .await?;
+
+// base64 から
+let result = client.extract::<Description>("この画像を説明してください")
+    .image(ImageInput::Base64 {
+        media_type: "image/png".into(),
+        data: base64_string,
+    })
+    .await?;
+
+// 複数画像
+let result = client.extract::<Comparison>("これらの画像を比較してください")
+    .images(vec![
+        ImageInput::Url("https://example.com/a.jpg".into()),
+        ImageInput::Url("https://example.com/b.jpg".into()),
+    ])
+    .await?;
+```
+
+## プロバイダーフォールバック
+
+複数のプロバイダーをチェーンして自動フェイルオーバーを実現：
+
+```rust
+let client = Client::openai("sk-...")
+    .with_fallback(Client::anthropic("sk-ant-..."))
+    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
+
+// OpenAI を最初に試行 → 失敗時に Anthropic → 最終手段として DeepSeek
+let result = client.extract::<Contact>("...").await?;
+```
+
+各フォールバックはプライマリプロバイダーがリトライを使い切った後、順番に試行されます。
+
 ## ライフサイクルフック
 
 リクエストとレスポンスを監視:

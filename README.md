@@ -150,6 +150,65 @@ let result = client.extract::<Summary>("summarize the above")
     .await?;
 ```
 
+## Streaming
+
+Stream partial JSON tokens as they arrive:
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_stream(|chunk| {
+        print!("{chunk}");  // partial JSON fragments
+    })
+    .await?;
+```
+
+Both OpenAI and Anthropic providers support streaming. The final result is assembled from all chunks and deserialized as usual.
+
+## Image Input
+
+Extract structured data from images using vision-capable models:
+
+```rust
+use instructors::ImageInput;
+
+// from URL
+let result = client.extract::<Description>("Describe this image")
+    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .model("gpt-4o")
+    .await?;
+
+// from base64
+let result = client.extract::<Description>("Describe this image")
+    .image(ImageInput::Base64 {
+        media_type: "image/png".into(),
+        data: base64_string,
+    })
+    .await?;
+
+// multiple images
+let result = client.extract::<Comparison>("Compare these images")
+    .images(vec![
+        ImageInput::Url("https://example.com/a.jpg".into()),
+        ImageInput::Url("https://example.com/b.jpg".into()),
+    ])
+    .await?;
+```
+
+## Provider Fallback
+
+Chain multiple providers for automatic failover:
+
+```rust
+let client = Client::openai("sk-...")
+    .with_fallback(Client::anthropic("sk-ant-..."))
+    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
+
+// tries OpenAI first → Anthropic on failure → DeepSeek as last resort
+let result = client.extract::<Contact>("...").await?;
+```
+
+Each fallback is tried in order after the primary provider exhausts its retries.
+
 ## Lifecycle Hooks
 
 Observe requests and responses:

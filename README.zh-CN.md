@@ -150,6 +150,65 @@ let result = client.extract::<Summary>("summarize the above")
     .await?;
 ```
 
+## 流式输出
+
+实时接收部分 JSON token：
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_stream(|chunk| {
+        print!("{chunk}");  // 部分 JSON 片段
+    })
+    .await?;
+```
+
+OpenAI 和 Anthropic 提供商均支持流式输出。最终结果由所有片段拼接后反序列化。
+
+## 图片输入
+
+使用视觉模型从图片中提取结构化数据：
+
+```rust
+use instructors::ImageInput;
+
+// 通过 URL
+let result = client.extract::<Description>("描述这张图片")
+    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .model("gpt-4o")
+    .await?;
+
+// 通过 base64
+let result = client.extract::<Description>("描述这张图片")
+    .image(ImageInput::Base64 {
+        media_type: "image/png".into(),
+        data: base64_string,
+    })
+    .await?;
+
+// 多张图片
+let result = client.extract::<Comparison>("对比这些图片")
+    .images(vec![
+        ImageInput::Url("https://example.com/a.jpg".into()),
+        ImageInput::Url("https://example.com/b.jpg".into()),
+    ])
+    .await?;
+```
+
+## 提供商故障转移
+
+链式配置多个提供商实现自动故障转移：
+
+```rust
+let client = Client::openai("sk-...")
+    .with_fallback(Client::anthropic("sk-ant-..."))
+    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
+
+// 优先尝试 OpenAI → 失败后尝试 Anthropic → 最后尝试 DeepSeek
+let result = client.extract::<Contact>("...").await?;
+```
+
+每个备选提供商按顺序尝试，仅在主提供商耗尽重试次数后触发。
+
 ## 生命周期钩子
 
 观察请求和响应：
