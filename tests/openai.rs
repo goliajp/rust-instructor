@@ -879,3 +879,90 @@ async fn extract_with_streaming() {
     let reassembled: String = collected.iter().cloned().collect();
     assert_eq!(reassembled, json_content);
 }
+
+#[tokio::test]
+async fn json_repair_trailing_comma() {
+    let server = MockServer::start().await;
+
+    // LLM returns JSON with trailing comma — should be repaired without retry
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_response(
+            r#"{"name": "Alice", "email": "alice@test.com",}"#,
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("test-key", &server.uri());
+    let result = client.extract::<Contact>("extract contact").await.unwrap();
+
+    assert_eq!(result.value.name, "Alice");
+    assert_eq!(result.value.email, Some("alice@test.com".into()));
+    assert_eq!(result.usage.retries, 0, "should not need a retry");
+}
+
+#[tokio::test]
+async fn json_repair_single_quotes() {
+    let server = MockServer::start().await;
+
+    // LLM returns JSON with single quotes
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{'name': 'Bob', 'email': null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("test-key", &server.uri());
+    let result = client.extract::<Contact>("extract contact").await.unwrap();
+
+    assert_eq!(result.value.name, "Bob");
+    assert_eq!(result.usage.retries, 0);
+}
+
+#[tokio::test]
+async fn json_repair_markdown_fenced() {
+    let server = MockServer::start().await;
+
+    // LLM wraps JSON in markdown code fence
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_response(
+            "```json\n{\"name\": \"Carol\", \"email\": null}\n```",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("test-key", &server.uri());
+    let result = client.extract::<Contact>("extract contact").await.unwrap();
+
+    assert_eq!(result.value.name, "Carol");
+    assert_eq!(result.usage.retries, 0);
+}
+
+#[tokio::test]
+async fn json_repair_unquoted_keys() {
+    let server = MockServer::start().await;
+
+    // LLM returns JSON with unquoted keys
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{name: "Dave", email: null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("test-key", &server.uri());
+    let result = client.extract::<Contact>("extract contact").await.unwrap();
+
+    assert_eq!(result.value.name, "Dave");
+    assert_eq!(result.usage.retries, 0);
+}

@@ -767,17 +767,44 @@ where
 
             usage.accumulate(raw.input_tokens, raw.output_tokens);
 
-            // parse JSON
+            // parse JSON — try direct parse first, then repair if malformed
             let value: T = match serde_json::from_str(&raw.content) {
                 Ok(v) => v,
-                Err(e) => {
-                    last_error = format!("{e} (raw: {})", truncate(&raw.content, 200));
-                    #[cfg(feature = "tracing")]
-                    tracing::info!(attempt, error = %last_error, "parse failed, retrying");
-                    if attempt < self.max_retries {
-                        usage.retries += 1;
+                Err(direct_err) => {
+                    // attempt to repair malformed JSON before retrying
+                    match jsonrepair::repair_json(&raw.content, &jsonrepair::Options::default()) {
+                        Ok(repaired) if repaired != raw.content => {
+                            match serde_json::from_str(&repaired) {
+                                Ok(v) => {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::info!(attempt, "json repaired successfully");
+                                    v
+                                }
+                                Err(repair_err) => {
+                                    last_error = format!(
+                                        "{repair_err} (repaired: {})",
+                                        truncate(&repaired, 200)
+                                    );
+                                    #[cfg(feature = "tracing")]
+                                    tracing::info!(attempt, error = %last_error, "repair parse failed, retrying");
+                                    if attempt < self.max_retries {
+                                        usage.retries += 1;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => {
+                            last_error =
+                                format!("{direct_err} (raw: {})", truncate(&raw.content, 200));
+                            #[cfg(feature = "tracing")]
+                            tracing::info!(attempt, error = %last_error, "parse failed, retrying");
+                            if attempt < self.max_retries {
+                                usage.retries += 1;
+                            }
+                            continue;
+                        }
                     }
-                    continue;
                 }
             };
 
