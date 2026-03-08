@@ -47,8 +47,10 @@ instructors = "1"
 |---|---|---|
 | OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
 | Anthropic | `Client::anthropic(key)` | `tool_use` による強制ツール選択 |
+| Google Gemini | `Client::gemini(key)` | `response_schema` 構造化 JSON |
 | OpenAI 互換 | `Client::openai_compatible(key, url)` | OpenAI と同一方式 (DeepSeek、Together 等) |
 | Anthropic 互換 | `Client::anthropic_compatible(key, url)` | Anthropic と同一方式 |
+| Gemini 互換 | `Client::gemini_compatible(key, url)` | Gemini と同一方式 |
 
 ```rust
 // OpenAI
@@ -62,6 +64,12 @@ let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
 
 // Anthropic 互換プロキシ
 let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
+
+// Google Gemini
+let client = Client::gemini("AIza...");
+
+// Gemini 互換プロキシ
+let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
 ```
 
 ## バリデーション
@@ -162,7 +170,7 @@ let result = client.extract::<Contact>("...")
     .await?;
 ```
 
-OpenAI と Anthropic の両プロバイダーでストリーミングをサポート。最終結果はすべてのチャンクを結合してデシリアライズされます。
+3 つのプロバイダー（OpenAI、Anthropic、Gemini）すべてでストリーミングをサポート。最終結果はすべてのチャンクを結合してデシリアライズされます。
 
 ## 画像入力
 
@@ -208,6 +216,32 @@ let result = client.extract::<Contact>("...").await?;
 ```
 
 各フォールバックはプライマリプロバイダーがリトライを使い切った後、順番に試行されます。
+
+## リトライとタイムアウト
+
+HTTP 429/503 エラーに対する指数バックオフと、リクエスト全体のタイムアウトを設定：
+
+```rust
+use std::time::Duration;
+use instructors::BackoffConfig;
+
+let client = Client::openai("sk-...")
+    .with_retry_backoff(BackoffConfig::default())  // 500ms ベース, 30s 上限, 3 回リトライ
+    .with_timeout(Duration::from_secs(120));        // 全体タイムアウト
+
+// リクエストごとに上書き
+let result = client.extract::<Contact>("...")
+    .retry_backoff(BackoffConfig {
+        base_delay: Duration::from_millis(200),
+        max_delay: Duration::from_secs(10),
+        jitter: true,
+        max_http_retries: 5,
+    })
+    .timeout(Duration::from_secs(30))
+    .await?;
+```
+
+バックオフ未設定時、HTTP 429/503 エラーは即座に失敗します（デフォルト動作は変更なし）。
 
 ## ライフサイクルフック
 
@@ -269,6 +303,8 @@ let result: MyStruct = client
     .max_tokens(2048)                 // 出力トークン数の上限
     .max_retries(3)                   // パース/バリデーション失敗時のリトライ回数
     .context("extra context...")      // プロンプトに追加コンテキストを付与
+    .retry_backoff(BackoffConfig::default()) // HTTP 429/503 バックオフ
+    .timeout(Duration::from_secs(30))        // 全体タイムアウト
     .await?
     .value;
 ```
@@ -319,6 +355,7 @@ instructors = { version = "1", default-features = false }
 3. スキーマはターゲットプロバイダー向けに変換:
    - **OpenAI**: `response_format` に strict モードでラップ (`additionalProperties: false`、全フィールド必須)
    - **Anthropic**: `tool` として `input_schema` にラップし、`tool_choice` で強制
+   - **Gemini**: `response_schema` として渡し、`response_mime_type: "application/json"` を設定
 4. LLM はスキーマに一致する有効な JSON の出力に制約
 5. レスポンスは `serde_json::from_str::<T>()` でデシリアライズ
 6. `Validate` トレイトまたは `.validate()` クロージャが設定されている場合、バリデーションを実行

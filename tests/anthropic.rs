@@ -420,6 +420,44 @@ async fn extract_with_streaming_anthropic() {
 }
 
 #[tokio::test]
+async fn streaming_multibyte_utf8_anthropic() {
+    let server = MockServer::start().await;
+
+    // stream JSON with multi-byte chars across chunks
+    let json_content = r#"{"name":"東京","email":"t@t.com"}"#;
+    let sse_body = anthropic_stream_events(json_content);
+
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let chunks_clone = chunks.clone();
+
+    let client = Client::anthropic_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("test")
+        .on_stream(move |chunk| {
+            chunks_clone.lock().unwrap().push(chunk.to_string());
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "東京");
+
+    let collected = chunks.lock().unwrap();
+    let reassembled: String = collected.iter().cloned().collect();
+    assert_eq!(reassembled, json_content);
+}
+
+#[tokio::test]
 async fn cross_provider_fallback_openai_to_anthropic() {
     use wiremock::matchers::path;
 

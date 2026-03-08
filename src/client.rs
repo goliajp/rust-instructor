@@ -1,12 +1,14 @@
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
+use crate::backoff::BackoffConfig;
 use crate::error::{Error, Result};
-use crate::provider::{ImageInput, Message, ProviderKind};
+use crate::provider::{ImageInput, Message, ProviderKind, RawResponse};
 use crate::usage::Usage;
 use crate::validate::{Validate, ValidationError};
 
@@ -19,10 +21,12 @@ pub struct ExtractResult<T> {
     pub usage: Usage,
 }
 
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// LLM client for structured data extraction.
 ///
 /// Supports OpenAI (via structured output), Anthropic (via tool use),
-/// and any OpenAI-compatible API.
+/// Google Gemini (via response_schema), and any compatible API.
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -32,6 +36,8 @@ pub struct Client {
     pub(crate) default_max_retries: u32,
     pub(crate) default_temperature: Option<f64>,
     pub(crate) default_max_tokens: u32,
+    pub(crate) default_backoff: Option<BackoffConfig>,
+    pub(crate) default_timeout: Duration,
     fallbacks: Vec<Client>,
 }
 
@@ -53,6 +59,8 @@ impl Client {
             default_max_retries: 2,
             default_temperature: Some(0.0),
             default_max_tokens: 4096,
+            default_backoff: None,
+            default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
         }
     }
@@ -74,6 +82,8 @@ impl Client {
             default_max_retries: 2,
             default_temperature: None,
             default_max_tokens: 4096,
+            default_backoff: None,
+            default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
         }
     }
@@ -98,6 +108,8 @@ impl Client {
             default_max_retries: 2,
             default_temperature: None,
             default_max_tokens: 4096,
+            default_backoff: None,
+            default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
         }
     }
@@ -122,6 +134,57 @@ impl Client {
             default_max_retries: 2,
             default_temperature: Some(0.0),
             default_max_tokens: 4096,
+            default_backoff: None,
+            default_timeout: DEFAULT_TIMEOUT,
+            fallbacks: Vec::new(),
+        }
+    }
+
+    /// Create a client for Google Gemini models.
+    ///
+    /// ```rust,no_run
+    /// let client = instructors::Client::gemini("AIza...");
+    /// ```
+    pub fn gemini(api_key: impl Into<String>) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            provider: ProviderKind::Gemini {
+                api_key: api_key.into(),
+                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            },
+            default_model: None,
+            default_system: None,
+            default_max_retries: 2,
+            default_temperature: None,
+            default_max_tokens: 8192,
+            default_backoff: None,
+            default_timeout: DEFAULT_TIMEOUT,
+            fallbacks: Vec::new(),
+        }
+    }
+
+    /// Create a client for any Gemini-compatible API.
+    ///
+    /// ```rust,no_run
+    /// let client = instructors::Client::gemini_compatible(
+    ///     "AIza...",
+    ///     "https://custom-gemini-proxy.example.com/v1beta",
+    /// );
+    /// ```
+    pub fn gemini_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            provider: ProviderKind::Gemini {
+                api_key: api_key.into(),
+                base_url: base_url.into(),
+            },
+            default_model: None,
+            default_system: None,
+            default_max_retries: 2,
+            default_temperature: None,
+            default_max_tokens: 8192,
+            default_backoff: None,
+            default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
         }
     }
@@ -170,6 +233,28 @@ impl Client {
     pub fn with_max_tokens(self, tokens: u32) -> Self {
         Self {
             default_max_tokens: tokens,
+            ..self
+        }
+    }
+
+    /// Enable exponential backoff for retryable HTTP errors (429, 503).
+    ///
+    /// When configured, HTTP 429 (Too Many Requests) and 503 (Service Unavailable)
+    /// errors are retried with exponential backoff before being treated as failures.
+    pub fn with_retry_backoff(self, config: BackoffConfig) -> Self {
+        Self {
+            default_backoff: Some(config),
+            ..self
+        }
+    }
+
+    /// Set the overall request timeout. Default: 60 seconds.
+    ///
+    /// This timeout covers the entire extraction including all retries,
+    /// backoff, and fallback attempts.
+    pub fn with_timeout(self, timeout: Duration) -> Self {
+        Self {
+            default_timeout: timeout,
             ..self
         }
     }
@@ -235,6 +320,8 @@ impl Client {
             temperature: self.default_temperature,
             max_tokens: self.default_max_tokens,
             max_retries: self.default_max_retries,
+            backoff: self.default_backoff.clone(),
+            timeout: self.default_timeout,
             context: None,
             images: Vec::new(),
             history: None,
@@ -273,6 +360,8 @@ impl Client {
             temperature: self.default_temperature,
             max_tokens: self.default_max_tokens,
             max_retries: self.default_max_retries,
+            backoff: self.default_backoff.clone(),
+            timeout: self.default_timeout,
             context: None,
             images: Vec::new(),
             history: None,
@@ -298,6 +387,8 @@ pub struct ExtractBuilder<'a, T> {
     temperature: Option<f64>,
     max_tokens: u32,
     max_retries: u32,
+    backoff: Option<BackoffConfig>,
+    timeout: Duration,
     context: Option<String>,
     images: Vec<ImageInput>,
     history: Option<Vec<Message>>,
@@ -354,6 +445,21 @@ where
             max_retries: retries,
             ..self
         }
+    }
+
+    /// Enable exponential backoff for retryable HTTP errors (429, 503).
+    pub fn retry_backoff(self, config: BackoffConfig) -> Self {
+        Self {
+            backoff: Some(config),
+            ..self
+        }
+    }
+
+    /// Set the overall request timeout for this extraction.
+    ///
+    /// Covers the entire extraction including all retries, backoff, and fallback.
+    pub fn timeout(self, timeout: Duration) -> Self {
+        Self { timeout, ..self }
     }
 
     /// Add extra context to the prompt.
@@ -482,6 +588,37 @@ where
     where
         T: 'static,
     {
+        let timeout = self.timeout;
+        #[cfg(feature = "tracing")]
+        {
+            let model = self
+                .model
+                .as_deref()
+                .unwrap_or(self.client.provider.default_model())
+                .to_string();
+            let span = tracing::info_span!(
+                "instructors.extract",
+                provider = self.client.provider.kind_name(),
+                model = model.as_str(),
+                max_retries = self.max_retries,
+            );
+            use tracing::Instrument;
+            tokio::time::timeout(timeout, self.execute_inner().instrument(span))
+                .await
+                .map_err(|_| Error::Timeout(timeout))?
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            tokio::time::timeout(timeout, self.execute_inner())
+                .await
+                .map_err(|_| Error::Timeout(timeout))?
+        }
+    }
+
+    async fn execute_inner(self) -> Result<ExtractResult<T>>
+    where
+        T: 'static,
+    {
         // try primary provider
         let result = self.try_provider(self.client).await;
 
@@ -489,6 +626,15 @@ where
         match result {
             Ok(ok) => Ok(ok),
             Err(primary_err) => {
+                #[cfg(feature = "tracing")]
+                if !self.client.fallbacks.is_empty() {
+                    tracing::info!(
+                        from_provider = self.client.provider.kind_name(),
+                        error = %primary_err,
+                        "primary provider failed, trying fallbacks"
+                    );
+                }
+
                 for fallback in &self.client.fallbacks {
                     if let Ok(ok) = self.try_provider(fallback).await {
                         return Ok(ok);
@@ -499,11 +645,68 @@ where
         }
     }
 
+    /// Send an HTTP request with optional exponential backoff on 429/503.
+    async fn http_send_with_retry(
+        &self,
+        client: &Client,
+        model: &str,
+        system: Option<&str>,
+        messages: &[Message],
+        root_schema_ref: &schemars::Schema,
+        schema_name: &str,
+    ) -> Result<RawResponse> {
+        let max_http_retries = self
+            .backoff
+            .as_ref()
+            .map(|b| b.max_http_retries)
+            .unwrap_or(0);
+
+        for http_attempt in 0..=max_http_retries {
+            let result = client
+                .provider
+                .send(
+                    &client.http,
+                    model,
+                    system,
+                    messages,
+                    root_schema_ref,
+                    schema_name,
+                    self.temperature,
+                    self.max_tokens,
+                    self.on_stream.as_deref(),
+                )
+                .await;
+
+            match result {
+                Ok(raw) => return Ok(raw),
+                Err(Error::Api { status, .. })
+                    if (status == 429 || status == 503) && http_attempt < max_http_retries =>
+                {
+                    if let Some(ref backoff) = self.backoff {
+                        let delay = backoff.delay_for(http_attempt);
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(
+                            status,
+                            attempt = http_attempt,
+                            delay_ms = delay.as_millis() as u64,
+                            "retryable HTTP error, backing off"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        unreachable!()
+    }
+
     async fn try_provider(&self, client: &Client) -> Result<ExtractResult<T>>
     where
         T: 'static,
     {
         let (root_schema, schema_name) = crate::schema::cached_schema_for::<T>();
+        let root_schema_ref: &schemars::Schema = &root_schema;
 
         let mut user_content = self.prompt.clone();
         if let Some(ctx) = &self.context {
@@ -519,12 +722,13 @@ where
         let mut usage = Usage::default();
         let mut last_error = String::new();
 
-        // pre-clone history once outside the retry loop
+        // pre-clone history and images once outside the retry loop
         let history: Vec<Message> = self
             .history
             .as_ref()
             .map(|h| h.to_vec())
             .unwrap_or_default();
+        let images = &self.images;
 
         for attempt in 0..=self.max_retries {
             let prompt_with_retry = if attempt == 0 {
@@ -543,25 +747,21 @@ where
             messages.push(Message {
                 role: "user".into(),
                 content: prompt_with_retry.clone(),
-                images: self.images.clone(),
+                images: images.clone(),
             });
 
             if let Some(ref hook) = self.on_request {
                 hook(model, &prompt_with_retry);
             }
 
-            let raw = client
-                .provider
-                .send(
-                    &client.http,
+            let raw = self
+                .http_send_with_retry(
+                    client,
                     model,
                     system,
                     &messages,
-                    &root_schema,
+                    root_schema_ref,
                     &schema_name,
-                    self.temperature,
-                    self.max_tokens,
-                    self.on_stream.as_deref(),
                 )
                 .await?;
 
@@ -572,6 +772,8 @@ where
                 Ok(v) => v,
                 Err(e) => {
                     last_error = format!("{e} (raw: {})", truncate(&raw.content, 200));
+                    #[cfg(feature = "tracing")]
+                    tracing::info!(attempt, error = %last_error, "parse failed, retrying");
                     if attempt < self.max_retries {
                         usage.retries += 1;
                     }
@@ -584,6 +786,8 @@ where
                 && let Err(e) = validator(&value)
             {
                 last_error = format!("validation: {}", e.message);
+                #[cfg(feature = "tracing")]
+                tracing::info!(attempt, error = %last_error, "validation failed, retrying");
                 if attempt < self.max_retries {
                     usage.retries += 1;
                 }
@@ -599,6 +803,13 @@ where
                     usage.output_tokens as u64,
                 );
             }
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                retries = usage.retries,
+                "extraction succeeded"
+            );
             if let Some(ref hook) = self.on_response {
                 hook(&usage);
             }
@@ -606,6 +817,9 @@ where
         }
 
         // determine error type
+        #[cfg(feature = "tracing")]
+        tracing::error!(retries = self.max_retries, error = %last_error, "extraction failed");
+
         let err = if last_error.starts_with("validation:") {
             Error::ValidationFailed {
                 retries: self.max_retries,
@@ -989,5 +1203,73 @@ mod tests {
         let validator = builder.validator.as_ref().unwrap();
         assert!(validator(&Strict { value: 5 }).is_ok());
         assert!(validator(&Strict { value: -1 }).is_err());
+    }
+
+    #[test]
+    fn client_builder_gemini() {
+        let client = Client::gemini("test-key");
+        assert_eq!(client.default_temperature, None);
+        assert_eq!(client.default_max_tokens, 8192);
+        match &client.provider {
+            ProviderKind::Gemini { base_url, .. } => {
+                assert_eq!(base_url, "https://generativelanguage.googleapis.com/v1beta");
+            }
+            _ => panic!("expected Gemini provider"),
+        }
+    }
+
+    #[test]
+    fn client_gemini_compatible() {
+        let client = Client::gemini_compatible("key", "https://proxy.example.com/v1beta");
+        match &client.provider {
+            ProviderKind::Gemini { base_url, .. } => {
+                assert_eq!(base_url, "https://proxy.example.com/v1beta");
+            }
+            _ => panic!("expected Gemini provider"),
+        }
+    }
+
+    #[test]
+    fn default_timeout_60s() {
+        let client = Client::openai("key");
+        assert_eq!(client.default_timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn custom_timeout() {
+        let client = Client::openai("key").with_timeout(Duration::from_secs(120));
+        assert_eq!(client.default_timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn client_with_retry_backoff() {
+        let client = Client::openai("key").with_retry_backoff(BackoffConfig::default());
+        assert!(client.default_backoff.is_some());
+    }
+
+    #[test]
+    fn extract_builder_backoff_and_timeout() {
+        let client = Client::openai("key")
+            .with_retry_backoff(BackoffConfig::default())
+            .with_timeout(Duration::from_secs(30));
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct Dummy {
+            x: i32,
+        }
+
+        let builder = client.extract::<Dummy>("test");
+        assert!(builder.backoff.is_some());
+        assert_eq!(builder.timeout, Duration::from_secs(30));
+
+        // per-request override
+        let builder = builder
+            .retry_backoff(BackoffConfig {
+                max_http_retries: 5,
+                ..Default::default()
+            })
+            .timeout(Duration::from_secs(90));
+        assert_eq!(builder.backoff.as_ref().unwrap().max_http_retries, 5);
+        assert_eq!(builder.timeout, Duration::from_secs(90));
     }
 }

@@ -1,8 +1,10 @@
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
+use crate::backoff::BackoffConfig;
 use crate::client::{Client, ExtractResult};
 use crate::error::Result;
 use crate::validate::ValidationError;
@@ -22,6 +24,8 @@ pub struct BatchBuilder<'a, T> {
     max_tokens: u32,
     max_retries: u32,
     concurrency: usize,
+    backoff: Option<BackoffConfig>,
+    timeout: Duration,
     validator: Option<ValidatorFn<T>>,
     _phantom: PhantomData<T>,
 }
@@ -40,6 +44,8 @@ where
             max_tokens: client.default_max_tokens,
             max_retries: client.default_max_retries,
             concurrency: 5,
+            backoff: client.default_backoff.clone(),
+            timeout: client.default_timeout,
             validator: None,
             _phantom: PhantomData,
         }
@@ -95,6 +101,19 @@ where
         }
     }
 
+    /// Enable exponential backoff for retryable HTTP errors (429, 503).
+    pub fn retry_backoff(self, config: BackoffConfig) -> Self {
+        Self {
+            backoff: Some(config),
+            ..self
+        }
+    }
+
+    /// Set the overall request timeout per extraction.
+    pub fn timeout(self, timeout: Duration) -> Self {
+        Self { timeout, ..self }
+    }
+
     /// Add a validation function applied to each extraction.
     pub fn validate<F>(self, f: F) -> Self
     where
@@ -118,6 +137,8 @@ where
         let temperature = self.temperature;
         let max_tokens = self.max_tokens;
         let max_retries = self.max_retries;
+        let backoff = self.backoff;
+        let timeout = self.timeout;
         let validator = self.validator.map(std::sync::Arc::new);
 
         let handles: Vec<_> = self
@@ -128,10 +149,13 @@ where
                 let model = model.clone();
                 let system = system.clone();
                 let validator = validator.clone();
+                let backoff = backoff.clone();
 
                 async move {
-                    let _permit: tokio::sync::OwnedSemaphorePermit =
-                        sem.acquire_owned().await.unwrap();
+                    let _permit: tokio::sync::OwnedSemaphorePermit = sem
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| crate::error::Error::Other("semaphore closed".into()))?;
                     let mut builder = client.extract::<T>(prompt);
                     if let Some(m) = model {
                         builder = builder.model(m);
@@ -142,7 +166,13 @@ where
                     if let Some(t) = temperature {
                         builder = builder.temperature(t);
                     }
-                    builder = builder.max_tokens(max_tokens).max_retries(max_retries);
+                    builder = builder
+                        .max_tokens(max_tokens)
+                        .max_retries(max_retries)
+                        .timeout(timeout);
+                    if let Some(b) = backoff {
+                        builder = builder.retry_backoff(b);
+                    }
                     if let Some(v) = validator {
                         builder = builder.validate(move |val: &T| v(val));
                     }
@@ -239,5 +269,31 @@ mod tests {
 
         let builder = BatchBuilder::<D>::new(&client, vec![]).concurrency(0);
         assert_eq!(builder.concurrency, 1);
+    }
+
+    #[test]
+    fn builder_backoff_and_timeout() {
+        let client = Client::openai("key")
+            .with_retry_backoff(BackoffConfig::default())
+            .with_timeout(Duration::from_secs(30));
+
+        #[derive(serde::Deserialize, JsonSchema)]
+        struct D {
+            x: i32,
+        }
+
+        let builder = BatchBuilder::<D>::new(&client, vec!["a".into()]);
+        assert!(builder.backoff.is_some());
+        assert_eq!(builder.timeout, Duration::from_secs(30));
+
+        // per-batch override
+        let builder = builder
+            .retry_backoff(BackoffConfig {
+                max_http_retries: 5,
+                ..Default::default()
+            })
+            .timeout(Duration::from_secs(90));
+        assert_eq!(builder.backoff.as_ref().unwrap().max_http_retries, 5);
+        assert_eq!(builder.timeout, Duration::from_secs(90));
     }
 }

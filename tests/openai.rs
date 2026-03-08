@@ -717,6 +717,127 @@ fn openai_stream_chunks(json_content: &str) -> String {
 }
 
 #[tokio::test]
+async fn streaming_with_empty_data_lines() {
+    let server = MockServer::start().await;
+
+    // SSE body with empty data lines and blank lines mixed in
+    let mut sse = String::new();
+    sse.push_str("data: \n\n"); // empty data line
+    let chunk1 = serde_json::json!({"choices": [{"delta": {"content": r#"{"name":"#}}]});
+    sse.push_str(&format!("data: {chunk1}\n\n"));
+    sse.push_str("\n"); // blank line
+    let chunk2 =
+        serde_json::json!({"choices": [{"delta": {"content": r#" "Empty", "email": null}"#}}]});
+    sse.push_str(&format!("data: {chunk2}\n\n"));
+    let usage =
+        serde_json::json!({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}});
+    sse.push_str(&format!("data: {usage}\n\n"));
+    sse.push_str("data: [DONE]\n\n");
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("test")
+        .on_stream(|_| {})
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Empty");
+}
+
+#[tokio::test]
+async fn streaming_multibyte_utf8_split() {
+    let server = MockServer::start().await;
+
+    // stream a JSON with multi-byte chars split across chunks
+    let mut sse = String::new();
+    let chunk1 = serde_json::json!({"choices": [{"delta": {"content": r#"{"name": "日"#}}]});
+    sse.push_str(&format!("data: {chunk1}\n\n"));
+    let chunk2 =
+        serde_json::json!({"choices": [{"delta": {"content": r#"本語", "email": null}"#}}]});
+    sse.push_str(&format!("data: {chunk2}\n\n"));
+    let usage =
+        serde_json::json!({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}});
+    sse.push_str(&format!("data: {usage}\n\n"));
+    sse.push_str("data: [DONE]\n\n");
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("key", &server.uri());
+    let result = client
+        .extract::<Contact>("test")
+        .on_stream(|_| {})
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "日本語");
+}
+
+#[tokio::test]
+async fn fallback_retry_count_accumulates() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    // primary: always returns bad JSON (exhausts retries)
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_response("bad json")))
+        .mount(&primary)
+        .await;
+
+    // fallback: first attempt bad, second good
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_response("also bad")))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "OK", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    let client = Client::openai_compatible("key", &primary.uri())
+        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+
+    let result = client
+        .extract::<Contact>("test")
+        .max_retries(1)
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "OK");
+    // fallback had 1 retry
+    assert_eq!(result.usage.retries, 1);
+}
+
+#[tokio::test]
 async fn extract_with_streaming() {
     let server = MockServer::start().await;
 

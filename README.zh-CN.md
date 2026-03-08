@@ -49,6 +49,8 @@ instructors = "1"
 | Anthropic | `Client::anthropic(key)` | `tool_use` 强制工具调用 |
 | OpenAI 兼容 | `Client::openai_compatible(key, url)` | 与 OpenAI 相同（DeepSeek、Together 等） |
 | Anthropic 兼容 | `Client::anthropic_compatible(key, url)` | 与 Anthropic 相同 |
+| Google Gemini | `Client::gemini(key)` | `response_schema` 结构化 JSON |
+| Gemini 兼容 | `Client::gemini_compatible(key, url)` | 与 Gemini 相同 |
 
 ```rust
 // OpenAI
@@ -62,6 +64,12 @@ let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
 
 // Anthropic 兼容代理
 let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
+
+// Google Gemini
+let client = Client::gemini("AIza...");
+
+// Gemini 兼容代理
+let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
 ```
 
 ## 校验
@@ -162,7 +170,7 @@ let result = client.extract::<Contact>("...")
     .await?;
 ```
 
-OpenAI 和 Anthropic 提供商均支持流式输出。最终结果由所有片段拼接后反序列化。
+三大提供商（OpenAI、Anthropic、Gemini）均支持流式输出。最终结果由所有片段拼接后反序列化。
 
 ## 图片输入
 
@@ -208,6 +216,32 @@ let result = client.extract::<Contact>("...").await?;
 ```
 
 每个备选提供商按顺序尝试，仅在主提供商耗尽重试次数后触发。
+
+## 重试与超时
+
+启用 HTTP 429/503 错误的指数退避重试，并设置整体请求超时：
+
+```rust
+use std::time::Duration;
+use instructors::BackoffConfig;
+
+let client = Client::openai("sk-...")
+    .with_retry_backoff(BackoffConfig::default())  // 500ms 基础延迟, 30s 上限, 3 次重试
+    .with_timeout(Duration::from_secs(120));        // 整体超时
+
+// 按请求覆盖
+let result = client.extract::<Contact>("...")
+    .retry_backoff(BackoffConfig {
+        base_delay: Duration::from_millis(200),
+        max_delay: Duration::from_secs(10),
+        jitter: true,
+        max_http_retries: 5,
+    })
+    .timeout(Duration::from_secs(30))
+    .await?;
+```
+
+未配置退避时，HTTP 429/503 错误将立即失败（默认行为不变）。
 
 ## 生命周期钩子
 
@@ -269,6 +303,8 @@ let result: MyStruct = client
     .max_tokens(2048)                 // 限制输出 token 数
     .max_retries(3)                   // 解析/校验失败时重试
     .context("extra context...")      // 追加到提示
+    .retry_backoff(BackoffConfig::default()) // HTTP 429/503 退避
+    .timeout(Duration::from_secs(30))        // 整体超时
     .await?
     .value;
 ```
@@ -319,6 +355,7 @@ instructors = { version = "1", default-features = false }
 3. Schema 根据目标提供商进行转换：
    - **OpenAI**：封装在 `response_format` 中，启用严格模式（`additionalProperties: false`，所有字段必填）
    - **Anthropic**：封装为 `tool`，设置 `input_schema`，通过 `tool_choice` 强制调用
+   - **Gemini**：作为 `response_schema` 传入，设置 `response_mime_type: "application/json"`
 4. LLM 被约束为生成符合 Schema 的合法 JSON
 5. 响应通过 `serde_json::from_str::<T>()` 反序列化
 6. 若实现了 `Validate` trait 或设置了 `.validate()` 闭包，则执行校验
