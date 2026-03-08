@@ -213,6 +213,44 @@ async fn batch_concurrency_one() {
 }
 
 #[tokio::test]
+async fn batch_concurrency_one_with_failure() {
+    let server = MockServer::start().await;
+
+    // first prompt succeeds, second fails
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "OK", "email": null}"#)),
+        )
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("key", &server.uri());
+    let results = client
+        .extract_batch::<Contact>(vec!["good".into(), "bad".into()])
+        .concurrency(1)
+        .max_retries(0)
+        .run()
+        .await;
+
+    assert_eq!(results.len(), 2);
+    assert!(results[0].is_ok());
+    assert_eq!(results[0].as_ref().unwrap().value.name, "OK");
+    assert!(results[1].is_err());
+    assert!(matches!(results[1], Err(Error::Api { status: 500, .. })));
+}
+
+#[tokio::test]
 async fn batch_preserves_order() {
     let server = MockServer::start().await;
 

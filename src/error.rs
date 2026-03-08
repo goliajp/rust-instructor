@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,6 +18,9 @@ pub enum Error {
 
     #[error("validation failed after {retries} retries: {message}")]
     ValidationFailed { retries: u32, message: String },
+
+    #[error("request timed out after {0:?}")]
+    Timeout(Duration),
 
     #[error("{0}")]
     Other(String),
@@ -76,6 +81,14 @@ mod tests {
         let json_err = serde_json::from_str::<String>("invalid").unwrap_err();
         let err: Error = json_err.into();
         assert!(matches!(err, Error::Json(_)));
+    }
+
+    #[test]
+    fn display_timeout() {
+        let err = Error::Timeout(Duration::from_secs(60));
+        let s = err.to_string();
+        assert!(s.contains("timed out"));
+        assert!(s.contains("60"));
     }
 
     #[test]

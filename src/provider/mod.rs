@@ -1,7 +1,9 @@
 mod anthropic;
+mod gemini;
 mod openai;
 
 pub(crate) use anthropic::send_anthropic;
+pub(crate) use gemini::send_gemini;
 pub(crate) use openai::send_openai;
 
 pub(crate) type StreamCallback<'a> = Option<&'a (dyn Fn(&str) + Send + Sync)>;
@@ -19,6 +21,7 @@ pub(crate) struct RawResponse {
 pub(crate) enum ProviderKind {
     OpenAi { api_key: String, base_url: String },
     Anthropic { api_key: String, base_url: String },
+    Gemini { api_key: String, base_url: String },
 }
 
 /// Image input for vision-capable models.
@@ -72,6 +75,17 @@ impl ProviderKind {
         match self {
             Self::OpenAi { .. } => "gpt-4o",
             Self::Anthropic { .. } => "claude-sonnet-4-20250514",
+            Self::Gemini { .. } => "gemini-2.5-flash",
+        }
+    }
+
+    /// Returns the provider name for diagnostics and tracing.
+    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
+    pub(crate) fn kind_name(&self) -> &'static str {
+        match self {
+            Self::OpenAi { .. } => "openai",
+            Self::Anthropic { .. } => "anthropic",
+            Self::Gemini { .. } => "gemini",
         }
     }
 
@@ -107,6 +121,21 @@ impl ProviderKind {
             Self::Anthropic { api_key, base_url } => {
                 send_anthropic(
                     http, base_url, api_key, model, system, messages, schema, max_tokens, on_stream,
+                )
+                .await
+            }
+            Self::Gemini { api_key, base_url } => {
+                send_gemini(
+                    http,
+                    base_url,
+                    api_key,
+                    model,
+                    system,
+                    messages,
+                    schema,
+                    temperature,
+                    max_tokens,
+                    on_stream,
                 )
                 .await
             }
@@ -191,5 +220,35 @@ mod tests {
             base_url: "url".into(),
         };
         assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn default_model_gemini() {
+        let provider = ProviderKind::Gemini {
+            api_key: "key".into(),
+            base_url: "url".into(),
+        };
+        assert_eq!(provider.default_model(), "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn kind_name_all() {
+        let openai = ProviderKind::OpenAi {
+            api_key: "k".into(),
+            base_url: "u".into(),
+        };
+        assert_eq!(openai.kind_name(), "openai");
+
+        let anthropic = ProviderKind::Anthropic {
+            api_key: "k".into(),
+            base_url: "u".into(),
+        };
+        assert_eq!(anthropic.kind_name(), "anthropic");
+
+        let gemini = ProviderKind::Gemini {
+            api_key: "k".into(),
+            base_url: "u".into(),
+        };
+        assert_eq!(gemini.kind_name(), "gemini");
     }
 }

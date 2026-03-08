@@ -49,6 +49,8 @@ instructors = "1"
 | Anthropic | `Client::anthropic(key)` | `tool_use` with forced tool choice |
 | OpenAI-compatible | `Client::openai_compatible(key, url)` | Same as OpenAI (DeepSeek, Together, etc.) |
 | Anthropic-compatible | `Client::anthropic_compatible(key, url)` | Same as Anthropic |
+| Google Gemini | `Client::gemini(key)` | `response_schema` structured JSON |
+| Gemini-compatible | `Client::gemini_compatible(key, url)` | Same as Gemini |
 
 ```rust
 // OpenAI
@@ -62,6 +64,12 @@ let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
 
 // Anthropic-compatible proxy
 let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
+
+// Google Gemini
+let client = Client::gemini("AIza...");
+
+// Gemini-compatible proxy
+let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
 ```
 
 ## Validation
@@ -162,7 +170,7 @@ let result = client.extract::<Contact>("...")
     .await?;
 ```
 
-Both OpenAI and Anthropic providers support streaming. The final result is assembled from all chunks and deserialized as usual.
+All three providers (OpenAI, Anthropic, Gemini) support streaming. The final result is assembled from all chunks and deserialized as usual.
 
 ## Image Input
 
@@ -208,6 +216,32 @@ let result = client.extract::<Contact>("...").await?;
 ```
 
 Each fallback is tried in order after the primary provider exhausts its retries.
+
+## Retry & Timeout
+
+Enable exponential backoff on HTTP 429/503 errors and set an overall request timeout:
+
+```rust
+use std::time::Duration;
+use instructors::BackoffConfig;
+
+let client = Client::openai("sk-...")
+    .with_retry_backoff(BackoffConfig::default())  // 500ms base, 30s cap, 3 retries
+    .with_timeout(Duration::from_secs(120));        // overall timeout
+
+// per-request override
+let result = client.extract::<Contact>("...")
+    .retry_backoff(BackoffConfig {
+        base_delay: Duration::from_millis(200),
+        max_delay: Duration::from_secs(10),
+        jitter: true,
+        max_http_retries: 5,
+    })
+    .timeout(Duration::from_secs(30))
+    .await?;
+```
+
+Without backoff configured, HTTP 429/503 errors fail immediately (default behavior unchanged).
 
 ## Lifecycle Hooks
 
@@ -269,6 +303,8 @@ let result: MyStruct = client
     .max_tokens(2048)                 // limit output tokens
     .max_retries(3)                   // retry on parse/validation failure
     .context("extra context...")      // append to prompt
+    .retry_backoff(BackoffConfig::default()) // HTTP 429/503 backoff
+    .timeout(Duration::from_secs(30))        // overall timeout
     .await?
     .value;
 ```
@@ -319,6 +355,7 @@ instructors = { version = "1", default-features = false }
 3. The schema is transformed for the target provider:
    - **OpenAI**: wrapped in `response_format` with strict mode (`additionalProperties: false`, all fields required)
    - **Anthropic**: wrapped as a `tool` with `input_schema`, forced via `tool_choice`
+   - **Gemini**: passed as `response_schema` with `response_mime_type: "application/json"`
 4. LLM is constrained to produce valid JSON matching the schema
 5. Response is deserialized with `serde_json::from_str::<T>()`
 6. If `Validate` trait or `.validate()` closure is present, validation runs

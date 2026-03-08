@@ -58,14 +58,21 @@
 //! ## Features
 //!
 //! - **Multi-provider** — OpenAI (`response_format` strict), Anthropic (`tool_use`),
-//!   plus any OpenAI/Anthropic-compatible API
+//!   Google Gemini (`response_schema`), plus any compatible API
 //! - **List extraction** — `extract_many::<T>()` returns `Vec<T>`
 //! - **Batch processing** — `extract_batch::<T>()` with configurable concurrency
 //! - **Multi-turn** — `.messages()` for conversation history
 //! - **Validation** — closure-based `.validate()` or trait-based `.validated()`
 //! - **Lifecycle hooks** — `.on_request()` / `.on_response()`
+//! - **Streaming** — SSE streaming via `.on_stream()` callback
+//! - **Images** — `.image()` / `.images()` for vision models
+//! - **Provider fallback** — `.with_fallback()` for auto-failover
+//! - **Retry backoff** — exponential backoff on 429/503 via `.retry_backoff()`
+//! - **Request timeout** — overall timeout via `.timeout()`
 //! - **Cost tracking** — token counting and cost estimation via `tiktoken` (optional)
+//! - **Tracing** — structured logging via `tracing` (optional feature)
 
+mod backoff;
 mod batch;
 mod client;
 mod error;
@@ -74,6 +81,7 @@ mod schema;
 mod usage;
 mod validate;
 
+pub use backoff::BackoffConfig;
 pub use batch::BatchBuilder;
 pub use client::{Client, ExtractBuilder, ExtractResult};
 pub use error::{Error, Result};
@@ -92,7 +100,8 @@ pub use serde;
 /// ```
 pub mod prelude {
     pub use crate::{
-        BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate, ValidationError,
+        BackoffConfig, BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate,
+        ValidationError,
     };
     pub use schemars::JsonSchema;
     pub use serde::Deserialize;
@@ -198,6 +207,7 @@ mod tests {
             let _: fn() -> std::result::Result<(), ValidationError> = || Ok(());
             fn _accepts_client(_: &Client) {}
             fn _accepts_usage(_: &Usage) {}
+            fn _accepts_backoff(_: &BackoffConfig) {}
         }
     }
 
