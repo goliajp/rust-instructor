@@ -67,6 +67,7 @@
 //! - **Streaming** — SSE streaming via `.on_stream()` callback
 //! - **Images** — `.image()` / `.images()` for vision models
 //! - **Provider fallback** — `.with_fallback()` for auto-failover
+//! - **JSON repair** — automatic repair of malformed LLM output (trailing commas, single quotes, etc.) before retry
 //! - **Retry backoff** — exponential backoff on 429/503 via `.retry_backoff()`
 //! - **Request timeout** — overall timeout via `.timeout()`
 //! - **Cost tracking** — token counting and cost estimation via `tiktoken` (optional)

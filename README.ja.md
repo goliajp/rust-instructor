@@ -348,6 +348,12 @@ println!("retries: {}", result.usage.retries);
 instructors = { version = "1", default-features = false }
 ```
 
+## JSON 自動修復
+
+LLM が不正な JSON を返した場合 — 末尾カンマ、シングルクォート、引用符なしのキー、Markdown コードフェンスなど — instructors はデシリアライズ前に自動的に出力の修復を試みます。修復に成功した場合、リトライを消費せずに直接パースされるため、トークンとレイテンシを節約できます。これは、軽微なフォーマットエラーが発生しやすい小規模モデルやオープンソースモデルで特に有効です。
+
+修復は透過的に行われ、設定は不要です。すべてのレスポンスに対して `serde_json` パース前に自動実行され、修復できない場合は通常のリトライパスにフォールバックします。
+
 ## 仕組み
 
 1. `#[derive(JsonSchema)]` が Rust の型から JSON Schema を生成 ([schemars](https://crates.io/crates/schemars) を利用)
@@ -357,9 +363,10 @@ instructors = { version = "1", default-features = false }
    - **Anthropic**: `tool` として `input_schema` にラップし、`tool_choice` で強制
    - **Gemini**: `response_schema` として渡し、`response_mime_type: "application/json"` を設定
 4. LLM はスキーマに一致する有効な JSON の出力に制約
-5. レスポンスは `serde_json::from_str::<T>()` でデシリアライズ
-6. `Validate` トレイトまたは `.validate()` クロージャが設定されている場合、バリデーションを実行
-7. パースまたはバリデーションの失敗時、エラーフィードバックを送信してリクエストをリトライ
+5. レスポンス JSON が不正な場合 (末尾カンマ、シングルクォート、引用符なしのキー、Markdown フェンス) は自動修復
+6. レスポンスは `serde_json::from_str::<T>()` でデシリアライズ
+7. `Validate` トレイトまたは `.validate()` クロージャが設定されている場合、バリデーションを実行
+8. パースまたはバリデーションの失敗時、エラーフィードバックを送信してリクエストをリトライ
 
 ## ライセンス
 
