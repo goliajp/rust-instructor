@@ -348,6 +348,12 @@ println!("retries: {}", result.usage.retries);
 instructors = { version = "1", default-features = false }
 ```
 
+## JSON 自动修复
+
+当 LLM 返回格式有误的 JSON 时——尾部逗号、单引号、未加引号的键名、Markdown 代码围栏等——instructors 会在反序列化前自动尝试修复输出。修复成功后直接解析，无需消耗重试次数，从而节省 token 和延迟。这对于更容易产生轻微格式错误的小型或开源模型尤为有用。
+
+修复过程完全透明：无需任何配置。每次响应在 `serde_json` 解析前都会自动运行修复，若无法修复则回退到正常重试流程。
+
 ## 工作原理
 
 1. `#[derive(JsonSchema)]` 从你的 Rust 类型生成 JSON Schema（基于 [schemars](https://crates.io/crates/schemars)）
@@ -357,9 +363,10 @@ instructors = { version = "1", default-features = false }
    - **Anthropic**：封装为 `tool`，设置 `input_schema`，通过 `tool_choice` 强制调用
    - **Gemini**：作为 `response_schema` 传入，设置 `response_mime_type: "application/json"`
 4. LLM 被约束为生成符合 Schema 的合法 JSON
-5. 响应通过 `serde_json::from_str::<T>()` 反序列化
-6. 若实现了 `Validate` trait 或设置了 `.validate()` 闭包，则执行校验
-7. 解析或校验失败时，将错误反馈发回 LLM 并重试
+5. 响应 JSON 若格式有误（尾部逗号、单引号、未加引号的键名、Markdown 围栏）会自动修复
+6. 响应通过 `serde_json::from_str::<T>()` 反序列化
+7. 若实现了 `Validate` trait 或设置了 `.validate()` 闭包，则执行校验
+8. 解析或校验失败时，将错误反馈发回 LLM 并重试
 
 ## 许可证
 

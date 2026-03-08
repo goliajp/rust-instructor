@@ -348,6 +348,12 @@ Disable with `default-features = false`:
 instructors = { version = "1", default-features = false }
 ```
 
+## JSON Repair
+
+When an LLM returns malformed JSON — trailing commas, single quotes, unquoted keys, markdown code fences, etc. — instructors automatically attempts to repair the output before deserialization. If repair succeeds, the fixed JSON is parsed directly without burning a retry. This saves both tokens and latency, especially with smaller or open-source models that are more likely to produce slightly broken output.
+
+Repair is transparent: you don't need to configure anything. It runs on every response before `serde_json` parsing, and falls back to the normal retry path if the output can't be fixed.
+
 ## How It Works
 
 1. `#[derive(JsonSchema)]` generates a JSON Schema from your Rust type (via [schemars](https://crates.io/crates/schemars))
@@ -357,9 +363,10 @@ instructors = { version = "1", default-features = false }
    - **Anthropic**: wrapped as a `tool` with `input_schema`, forced via `tool_choice`
    - **Gemini**: passed as `response_schema` with `response_mime_type: "application/json"`
 4. LLM is constrained to produce valid JSON matching the schema
-5. Response is deserialized with `serde_json::from_str::<T>()`
-6. If `Validate` trait or `.validate()` closure is present, validation runs
-7. On parse/validation failure, error feedback is sent back and the request is retried
+5. Response JSON is automatically repaired if malformed (trailing commas, single quotes, unquoted keys, markdown fences)
+6. Response is deserialized with `serde_json::from_str::<T>()`
+7. If `Validate` trait or `.validate()` closure is present, validation runs
+8. On parse/validation failure, error feedback is sent back and the request is retried
 
 ## License
 
