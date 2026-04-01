@@ -3,6 +3,8 @@
 [![Crates.io](https://img.shields.io/crates/v/instructors?style=flat-square&logo=rust)](https://crates.io/crates/instructors)
 [![docs.rs](https://img.shields.io/docsrs/instructors?style=flat-square&logo=docs.rs)](https://docs.rs/instructors)
 [![License](https://img.shields.io/crates/l/instructors?style=flat-square)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/instructors?style=flat-square)](https://crates.io/crates/instructors)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
@@ -10,28 +12,40 @@
 
 定义一个 Rust 结构体 → instructors 自动生成 JSON Schema → LLM 返回合法 JSON → 你得到一个强类型值。支持自动校验与重试。
 
+## 亮点
+
+- **6 大提供商** — OpenAI、Anthropic、Gemini、DeepSeek、Together，以及任何 OpenAI/Anthropic/Gemini 兼容 API
+- **校验 + 重试** — 无效输出连同错误详情反馈给 LLM，自动纠正
+- **JSON 自动修复** — 在重试前修复尾部逗号、单引号、Markdown 围栏等，节省 token 和延迟
+- **提供商故障转移** — 链式配置多个提供商实现自动切换
+- **流式输出** — 实时接收部分 JSON token（OpenAI、Anthropic、Gemini）
+- **批量 + 并发** — 通过 `Semaphore` 控制并发度，处理数百个提示
+- **视觉** — 从图片提取结构化数据（URL 或 base64）
+- **费用追踪** — 通过 [tiktoken](https://crates.io/crates/tiktoken) 提供逐请求 token 计数与费用估算
+
+## 为什么选择 instructors？
+
+| 维度 | 原始 API + serde | instructors |
+|---|---|---|
+| Schema 约束 | 手写 JSON Schema | 从 `#[derive(JsonSchema)]` 自动生成 |
+| 解析失败 | 崩溃或静默丢数据 | 自动重试并将错误反馈给 LLM |
+| 格式错误的 JSON | 应用报错 | 反序列化前自动修复 |
+| 多提供商 | 每个提供商单独适配 | 统一接口，一行切换 |
+| 校验 | 解析后手写 if/else | `.validate()` 支持 LLM 感知的重试 |
+| 费用追踪 | 自行计算 token | 内置 tiktoken 支持 |
+
 ## 快速开始
 
 ```rust
 use instructors::prelude::*;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct Contact {
-    name: String,
-    email: Option<String>,
-    phone: Option<String>,
-}
+struct Contact { name: String, email: Option<String> }
 
 let client = Client::openai("sk-...");
-
-let result: ExtractResult<Contact> = client
+let contact: Contact = client
     .extract("Contact John Doe at john@example.com")
-    .model("gpt-4o")
-    .await?;
-
-println!("{}", result.value.name);      // "John Doe"
-println!("{:?}", result.value.email);    // Some("john@example.com")
-println!("tokens: {}", result.usage.total_tokens);
+    .await?.value;
 ```
 
 ## 安装
@@ -71,6 +85,65 @@ let client = Client::gemini("AIza...");
 // Gemini 兼容代理
 let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
 ```
+
+## 流式输出
+
+实时接收部分 JSON token：
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_stream(|chunk| {
+        print!("{chunk}");  // 部分 JSON 片段
+    })
+    .await?;
+```
+
+三大提供商（OpenAI、Anthropic、Gemini）均支持流式输出。最终结果由所有片段拼接后反序列化。
+
+## 图片输入
+
+使用视觉模型从图片中提取结构化数据：
+
+```rust
+use instructors::ImageInput;
+
+// 通过 URL
+let result = client.extract::<Description>("描述这张图片")
+    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .model("gpt-4o")
+    .await?;
+
+// 通过 base64
+let result = client.extract::<Description>("描述这张图片")
+    .image(ImageInput::Base64 {
+        media_type: "image/png".into(),
+        data: base64_string,
+    })
+    .await?;
+
+// 多张图片
+let result = client.extract::<Comparison>("对比这些图片")
+    .images(vec![
+        ImageInput::Url("https://example.com/a.jpg".into()),
+        ImageInput::Url("https://example.com/b.jpg".into()),
+    ])
+    .await?;
+```
+
+## 提供商故障转移
+
+链式配置多个提供商实现自动故障转移：
+
+```rust
+let client = Client::openai("sk-...")
+    .with_fallback(Client::anthropic("sk-ant-..."))
+    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
+
+// 优先尝试 OpenAI → 失败后尝试 Anthropic → 最后尝试 DeepSeek
+let result = client.extract::<Contact>("...").await?;
+```
+
+每个备选提供商按顺序尝试，仅在主提供商耗尽重试次数后触发。
 
 ## 校验
 
@@ -158,106 +231,6 @@ let result = client.extract::<Summary>("summarize the above")
     .await?;
 ```
 
-## 流式输出
-
-实时接收部分 JSON token：
-
-```rust
-let result = client.extract::<Contact>("...")
-    .on_stream(|chunk| {
-        print!("{chunk}");  // 部分 JSON 片段
-    })
-    .await?;
-```
-
-三大提供商（OpenAI、Anthropic、Gemini）均支持流式输出。最终结果由所有片段拼接后反序列化。
-
-## 图片输入
-
-使用视觉模型从图片中提取结构化数据：
-
-```rust
-use instructors::ImageInput;
-
-// 通过 URL
-let result = client.extract::<Description>("描述这张图片")
-    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
-    .model("gpt-4o")
-    .await?;
-
-// 通过 base64
-let result = client.extract::<Description>("描述这张图片")
-    .image(ImageInput::Base64 {
-        media_type: "image/png".into(),
-        data: base64_string,
-    })
-    .await?;
-
-// 多张图片
-let result = client.extract::<Comparison>("对比这些图片")
-    .images(vec![
-        ImageInput::Url("https://example.com/a.jpg".into()),
-        ImageInput::Url("https://example.com/b.jpg".into()),
-    ])
-    .await?;
-```
-
-## 提供商故障转移
-
-链式配置多个提供商实现自动故障转移：
-
-```rust
-let client = Client::openai("sk-...")
-    .with_fallback(Client::anthropic("sk-ant-..."))
-    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
-
-// 优先尝试 OpenAI → 失败后尝试 Anthropic → 最后尝试 DeepSeek
-let result = client.extract::<Contact>("...").await?;
-```
-
-每个备选提供商按顺序尝试，仅在主提供商耗尽重试次数后触发。
-
-## 重试与超时
-
-启用 HTTP 429/503 错误的指数退避重试，并设置整体请求超时：
-
-```rust
-use std::time::Duration;
-use instructors::BackoffConfig;
-
-let client = Client::openai("sk-...")
-    .with_retry_backoff(BackoffConfig::default())  // 500ms 基础延迟, 30s 上限, 3 次重试
-    .with_timeout(Duration::from_secs(120));        // 整体超时
-
-// 按请求覆盖
-let result = client.extract::<Contact>("...")
-    .retry_backoff(BackoffConfig {
-        base_delay: Duration::from_millis(200),
-        max_delay: Duration::from_secs(10),
-        jitter: true,
-        max_http_retries: 5,
-    })
-    .timeout(Duration::from_secs(30))
-    .await?;
-```
-
-未配置退避时，HTTP 429/503 错误将立即失败（默认行为不变）。
-
-## 生命周期钩子
-
-观察请求和响应：
-
-```rust
-let result = client.extract::<Contact>("...")
-    .on_request(|model, prompt| {
-        println!("[req] model={model}, prompt_len={}", prompt.len());
-    })
-    .on_response(|usage| {
-        println!("[res] tokens={}, cost={:?}", usage.total_tokens, usage.cost);
-    })
-    .await?;
-```
-
 ## 分类
 
 枚举天然适用于分类任务：
@@ -291,6 +264,32 @@ struct Author {
 
 let paper: Paper = client.extract(&pdf_text).model("gpt-4o").await?.value;
 ```
+
+## 重试与超时
+
+启用 HTTP 429/503 错误的指数退避重试，并设置整体请求超时：
+
+```rust
+use std::time::Duration;
+use instructors::BackoffConfig;
+
+let client = Client::openai("sk-...")
+    .with_retry_backoff(BackoffConfig::default())  // 500ms 基础延迟, 30s 上限, 3 次重试
+    .with_timeout(Duration::from_secs(120));        // 整体超时
+
+// 按请求覆盖
+let result = client.extract::<Contact>("...")
+    .retry_backoff(BackoffConfig {
+        base_delay: Duration::from_millis(200),
+        max_delay: Duration::from_secs(10),
+        jitter: true,
+        max_http_retries: 5,
+    })
+    .timeout(Duration::from_secs(30))
+    .await?;
+```
+
+未配置退避时，HTTP 429/503 错误将立即失败（默认行为不变）。
 
 ## 配置
 
@@ -354,6 +353,21 @@ instructors = { version = "1", default-features = false }
 
 修复过程完全透明：无需任何配置。每次响应在 `serde_json` 解析前都会自动运行修复，若无法修复则回退到正常重试流程。
 
+## 生命周期钩子
+
+观察请求和响应：
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_request(|model, prompt| {
+        println!("[req] model={model}, prompt_len={}", prompt.len());
+    })
+    .on_response(|usage| {
+        println!("[res] tokens={}, cost={:?}", usage.total_tokens, usage.cost);
+    })
+    .await?;
+```
+
 ## 工作原理
 
 1. `#[derive(JsonSchema)]` 从你的 Rust 类型生成 JSON Schema（基于 [schemars](https://crates.io/crates/schemars)）
@@ -367,6 +381,16 @@ instructors = { version = "1", default-features = false }
 6. 响应通过 `serde_json::from_str::<T>()` 反序列化
 7. 若实现了 `Validate` trait 或设置了 `.validate()` 闭包，则执行校验
 8. 解析或校验失败时，将错误反馈发回 LLM 并重试
+
+## 生态系统
+
+instructors 是 [airs](https://github.com/goliajp/airs)（AI in Rust Series）的一部分：
+
+| Crate | 说明 |
+|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | 高性能 BPE 分词器，支持所有主流 LLM |
+| [embedrs](https://crates.io/crates/embedrs) | 统一嵌入方案 — 云 API + 本地推理，一套接口 |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | AI 原生文本分块 — 递归、Markdown、语义 |
 
 ## 许可证
 
