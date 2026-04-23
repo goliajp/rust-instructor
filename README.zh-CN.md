@@ -384,13 +384,14 @@ let result = client.extract::<Contact>("...")
 
 ## 生态系统
 
-instructors 是 [airs](https://github.com/goliajp/airs)（AI in Rust Series）的一部分：
+GOLIA 出品的一系列独立 AI 基础设施 crate，每个各自独立仓：
 
-| Crate | 说明 |
-|---|---|
-| [tiktoken](https://crates.io/crates/tiktoken) | 高性能 BPE 分词器，支持所有主流 LLM |
-| [embedrs](https://crates.io/crates/embedrs) | 统一嵌入方案 — 云 API + 本地推理，一套接口 |
-| [chunkedrs](https://crates.io/crates/chunkedrs) | AI 原生文本分块 — 递归、Markdown、语义 |
+| Crate | 仓库 | 说明 |
+|---|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | 高性能 BPE 分词器，支持所有主流 LLM |
+| [embedrs](https://crates.io/crates/embedrs) | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | 统一嵌入方案 —— 云 API + 本地推理，一套接口 |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI 原生文本分块 —— 递归、Markdown、语义 |
+| **instructors** | [rust-instructor](https://github.com/goliajp/rust-instructor) | LLM 类型安全结构化输出提取（本 crate） |
 
 ## 许可证
 

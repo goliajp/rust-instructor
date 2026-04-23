@@ -384,13 +384,14 @@ let result = client.extract::<Contact>("...")
 
 ## Ecosystem
 
-instructors is part of [airs](https://github.com/goliajp/airs) (AI in Rust Series):
+Part of a family of independent AI-infrastructure crates by GOLIA, each in its own repo:
 
-| Crate | Description |
-|---|---|
-| [tiktoken](https://crates.io/crates/tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
-| [embedrs](https://crates.io/crates/embedrs) | Unified embedding — cloud APIs + local inference, one interface |
-| [chunkedrs](https://crates.io/crates/chunkedrs) | AI-native text chunking — recursive, markdown, semantic |
+| Crate | Repo | Description |
+|---|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
+| [embedrs](https://crates.io/crates/embedrs) | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | Unified embedding — cloud APIs + local inference, one interface |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI-native text chunking — recursive, markdown, semantic |
+| **instructors** | [rust-instructor](https://github.com/goliajp/rust-instructor) | Type-safe structured output extraction from LLMs (this crate) |
 
 ## License
 
