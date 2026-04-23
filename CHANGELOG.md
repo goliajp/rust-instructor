@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.3] - 2026-04-24
+
+### Changed
+- Smoke-test release via the new repo's GitHub Actions publish workflow.
+  No code changes.
+
 ## [1.3.2] - 2026-04-24
 
 ### Changed
