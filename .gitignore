@@ -1,0 +1,14 @@
+target/
+Cargo.lock
+*.pdb
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code
+.claude/
+
+# local
+.env.local
