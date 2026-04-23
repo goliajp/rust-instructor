@@ -38,9 +38,10 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      # Library code is strict. Tests/examples/benches have pre-existing
-      # cosmetic patterns from the airs mono (needless_borrows_for_generic_args,
-      # etc.) that we don't bundle into the migration release.
+      # Library code is strict. Tests/examples/benches surface pre-existing
+      # cosmetic patterns (needless_borrows_for_generic_args, clone_on_copy,
+      # criterion::black_box deprecation, …) from the airs/guirs mono; we
+      # surface them as advisory only, not bundled into migration releases.
       - run: cargo clippy --workspace --lib -- -D warnings
       - run: cargo clippy --workspace --all-targets
 
