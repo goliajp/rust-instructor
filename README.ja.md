@@ -384,13 +384,14 @@ let result = client.extract::<Contact>("...")
 
 ## エコシステム
 
-instructors は [airs](https://github.com/goliajp/airs)（AI in Rust Series）の一部です：
+GOLIA の独立した AI インフラ crate ファミリーの一員、各々が独自のリポジトリ:
 
-| Crate | 説明 |
-|---|---|
-| [tiktoken](https://crates.io/crates/tiktoken) | 全主要 LLM 対応の高性能 BPE トークナイザー |
-| [embedrs](https://crates.io/crates/embedrs) | 統一エンベディング — クラウド API + ローカル推論、単一インターフェース |
-| [chunkedrs](https://crates.io/crates/chunkedrs) | AI ネイティブテキストチャンキング — 再帰、Markdown、セマンティック |
+| Crate | リポジトリ | 説明 |
+|---|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | 全主要 LLM 対応の高性能 BPE トークナイザー |
+| [embedrs](https://crates.io/crates/embedrs) | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | 統一エンベディング — クラウド API + ローカル推論、単一インターフェース |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI ネイティブテキストチャンキング — 再帰、Markdown、セマンティック |
+| **instructors** | [rust-instructor](https://github.com/goliajp/rust-instructor) | LLM からの型安全な構造化出力抽出（本 crate） |
 
 ## ライセンス
 
