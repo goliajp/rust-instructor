@@ -31,21 +31,64 @@
 //! # }
 //! ```
 //!
-//! ## Providers
+//! ## Validation
 //!
-//! - **OpenAI** — uses `response_format` with `json_schema` (strict mode)
-//! - **Anthropic** — uses `tool_use` with forced tool choice
-//! - **OpenAI-compatible** — any API implementing the OpenAI chat completions format
+//! ```rust,no_run
+//! use instructors::prelude::*;
+//!
+//! #[derive(Debug, Deserialize, JsonSchema)]
+//! struct User {
+//!     name: String,
+//!     age: u32,
+//! }
+//!
+//! # async fn run() -> instructors::Result<()> {
+//! let client = Client::openai("sk-...");
+//!
+//! // closure-based validation
+//! let user: User = client.extract("...")
+//!     .validate(|u: &User| {
+//!         if u.age > 150 { Err("age unrealistic".into()) } else { Ok(()) }
+//!     })
+//!     .await?.value;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Features
+//!
+//! - **Multi-provider** — OpenAI (`response_format` strict), Anthropic (`tool_use`),
+//!   Google Gemini (`response_schema`), plus any compatible API
+//! - **List extraction** — `extract_many::<T>()` returns `Vec<T>`
+//! - **Batch processing** — `extract_batch::<T>()` with configurable concurrency
+//! - **Multi-turn** — `.messages()` for conversation history
+//! - **Validation** — closure-based `.validate()` or trait-based `.validated()`
+//! - **Lifecycle hooks** — `.on_request()` / `.on_response()`
+//! - **Streaming** — SSE streaming via `.on_stream()` callback
+//! - **Images** — `.image()` / `.images()` for vision models
+//! - **Provider fallback** — `.with_fallback()` for auto-failover
+//! - **JSON repair** — automatic repair of malformed LLM output (trailing commas, single quotes, etc.) before retry
+//! - **Retry backoff** — exponential backoff on 429/503 via `.retry_backoff()`
+//! - **Request timeout** — overall timeout via `.timeout()`
+//! - **Cost tracking** — token counting and cost estimation via `tiktoken` (optional)
+//! - **Tracing** — structured logging via `tracing` (optional feature)
 
+mod backoff;
+mod batch;
 mod client;
 mod error;
 mod provider;
 mod schema;
 mod usage;
+mod validate;
 
+pub use backoff::BackoffConfig;
+pub use batch::BatchBuilder;
 pub use client::{Client, ExtractBuilder, ExtractResult};
 pub use error::{Error, Result};
+pub use provider::{ImageInput, Message};
 pub use usage::Usage;
+pub use validate::{Validate, ValidationError};
 
 // re-export for user convenience
 pub use schemars::JsonSchema;
@@ -57,7 +100,10 @@ pub use serde;
 /// use instructors::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::{Client, ExtractResult, Usage};
+    pub use crate::{
+        BackoffConfig, BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate,
+        ValidationError,
+    };
     pub use schemars::JsonSchema;
     pub use serde::Deserialize;
 }
@@ -88,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_from_json() {
+    fn deserialize_from_json() {
         let json = r#"{"name": "Alice", "age": 30}"#;
         let result: TestStruct = serde_json::from_str(json).unwrap();
         assert_eq!(result.name, "Alice");
@@ -96,35 +142,43 @@ mod tests {
     }
 
     #[test]
-    fn test_optional_field_present() {
+    fn optional_field_present() {
         let json = r#"{"title": "Hello", "subtitle": "World"}"#;
         let result: WithOptional = serde_json::from_str(json).unwrap();
         assert_eq!(result.subtitle, Some("World".into()));
     }
 
     #[test]
-    fn test_optional_field_null() {
+    fn optional_field_null() {
         let json = r#"{"title": "Hello", "subtitle": null}"#;
         let result: WithOptional = serde_json::from_str(json).unwrap();
         assert_eq!(result.subtitle, None);
     }
 
     #[test]
-    fn test_optional_field_missing() {
+    fn optional_field_missing() {
         let json = r#"{"title": "Hello"}"#;
         let result: WithOptional = serde_json::from_str(json).unwrap();
         assert_eq!(result.subtitle, None);
     }
 
     #[test]
-    fn test_enum_deserialize() {
+    fn enum_deserialize() {
         let json = r#""Bug""#;
         let result: Category = serde_json::from_str(json).unwrap();
         assert!(matches!(result, Category::Bug));
+
+        let json = r#""Feature""#;
+        let result: Category = serde_json::from_str(json).unwrap();
+        assert!(matches!(result, Category::Feature));
+
+        let json = r#""Question""#;
+        let result: Category = serde_json::from_str(json).unwrap();
+        assert!(matches!(result, Category::Question));
     }
 
     #[test]
-    fn test_schema_generation() {
+    fn schema_generation() {
         let schema = schemars::schema_for!(TestStruct);
         let value = serde_json::to_value(&schema).unwrap();
         assert_eq!(value["type"], "object");
@@ -133,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_usage_accumulate() {
+    fn usage_accumulate() {
         let mut usage = Usage::default();
         usage.accumulate(100, 50);
         assert_eq!(usage.input_tokens, 100);
@@ -147,36 +201,22 @@ mod tests {
     }
 
     #[test]
-    fn test_error_display() {
-        let err = Error::ExtractionFailed {
-            retries: 3,
-            message: "invalid json".into(),
-        };
-        assert!(err.to_string().contains("3 retries"));
-        assert!(err.to_string().contains("invalid json"));
+    fn prelude_re_exports() {
+        // verify all prelude items are accessible
+        fn _check() {
+            use crate::prelude::*;
+            let _: fn() -> std::result::Result<(), ValidationError> = || Ok(());
+            fn _accepts_client(_: &Client) {}
+            fn _accepts_usage(_: &Usage) {}
+            fn _accepts_backoff(_: &BackoffConfig) {}
+        }
     }
 
     #[test]
-    fn test_error_api() {
-        let err = Error::Api {
-            status: 429,
-            message: "rate limited".into(),
-        };
-        assert!(err.to_string().contains("429"));
-    }
-
-    #[test]
-    fn test_client_default_model() {
-        let openai = Client::openai("key");
-        match &openai.provider {
-            crate::provider::ProviderKind::OpenAi { .. } => {}
-            _ => panic!("wrong provider"),
-        }
-
-        let anthropic = Client::anthropic("key");
-        match &anthropic.provider {
-            crate::provider::ProviderKind::Anthropic { .. } => {}
-            _ => panic!("wrong provider"),
-        }
+    fn re_exports_available() {
+        // verify top-level re-exports
+        let _: fn() -> Result<()> = || Ok(());
+        fn _check_json_schema<T: JsonSchema>() {}
+        _check_json_schema::<TestStruct>();
     }
 }

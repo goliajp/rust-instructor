@@ -3,12 +3,36 @@
 [![Crates.io](https://img.shields.io/crates/v/instructors?style=flat-square&logo=rust)](https://crates.io/crates/instructors)
 [![docs.rs](https://img.shields.io/docsrs/instructors?style=flat-square&logo=docs.rs)](https://docs.rs/instructors)
 [![License](https://img.shields.io/crates/l/instructors?style=flat-square)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/instructors?style=flat-square)](https://crates.io/crates/instructors)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 Type-safe structured output extraction from LLMs. The Rust [instructor](https://github.com/jxnl/instructor).
 
-Define a Rust struct → instructors generates the JSON Schema → LLM returns valid JSON → you get a typed value. With automatic retry on parse failure.
+Define a Rust struct → instructors generates the JSON Schema → LLM returns valid JSON → you get a typed value. With automatic validation and retry.
+
+## Highlights
+
+- **6 providers** — OpenAI, Anthropic, Gemini, DeepSeek, Together, any OpenAI/Anthropic/Gemini-compatible API
+- **Validation + retry** — invalid output is fed back to the LLM with error details for automatic correction
+- **JSON auto-repair** — fixes trailing commas, single quotes, markdown fences before retry, saving tokens and latency
+- **Provider fallback** — chain multiple providers for automatic failover
+- **Streaming** — partial JSON tokens as they arrive (OpenAI, Anthropic, Gemini)
+- **Batch + concurrent** — process hundreds of prompts with configurable concurrency via `Semaphore`
+- **Vision** — extract structured data from images (URL or base64)
+- **Cost tracking** — per-request token count and cost estimation via [tiktoken](https://crates.io/crates/tiktoken)
+
+## Why instructors?
+
+| Aspect | Raw API + serde | instructors |
+|---|---|---|
+| Schema enforcement | Manual JSON Schema writing | Auto-generated from `#[derive(JsonSchema)]` |
+| Parse failures | Crash or silent data loss | Automatic retry with error feedback to LLM |
+| Malformed JSON | Application error | Auto-repaired before deserialization |
+| Multiple providers | Rewrite per provider | One interface, swap with one line |
+| Validation | Manual if/else after parsing | `.validate()` with LLM-aware retry |
+| Cost tracking | Count tokens yourself | Built-in via tiktoken |
 
 ## Quick Start
 
@@ -16,29 +40,19 @@ Define a Rust struct → instructors generates the JSON Schema → LLM returns v
 use instructors::prelude::*;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct Contact {
-    name: String,
-    email: Option<String>,
-    phone: Option<String>,
-}
+struct Contact { name: String, email: Option<String> }
 
 let client = Client::openai("sk-...");
-
-let result: ExtractResult<Contact> = client
+let contact: Contact = client
     .extract("Contact John Doe at john@example.com")
-    .model("gpt-4o")
-    .await?;
-
-println!("{}", result.value.name);      // "John Doe"
-println!("{:?}", result.value.email);    // Some("john@example.com")
-println!("tokens: {}", result.usage.total_tokens);
+    .await?.value;
 ```
 
 ## Installation
 
 ```toml
 [dependencies]
-instructors = "0.1"
+instructors = "1"
 ```
 
 ## Providers
@@ -48,6 +62,9 @@ instructors = "0.1"
 | OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
 | Anthropic | `Client::anthropic(key)` | `tool_use` with forced tool choice |
 | OpenAI-compatible | `Client::openai_compatible(key, url)` | Same as OpenAI (DeepSeek, Together, etc.) |
+| Anthropic-compatible | `Client::anthropic_compatible(key, url)` | Same as Anthropic |
+| Google Gemini | `Client::gemini(key)` | `response_schema` structured JSON |
+| Gemini-compatible | `Client::gemini_compatible(key, url)` | Same as Gemini |
 
 ```rust
 // OpenAI
@@ -58,6 +75,160 @@ let client = Client::anthropic("sk-ant-...");
 
 // DeepSeek, Together, or any OpenAI-compatible API
 let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
+
+// Anthropic-compatible proxy
+let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
+
+// Google Gemini
+let client = Client::gemini("AIza...");
+
+// Gemini-compatible proxy
+let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
+```
+
+## Streaming
+
+Stream partial JSON tokens as they arrive:
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_stream(|chunk| {
+        print!("{chunk}");  // partial JSON fragments
+    })
+    .await?;
+```
+
+All three providers (OpenAI, Anthropic, Gemini) support streaming. The final result is assembled from all chunks and deserialized as usual.
+
+## Image Input
+
+Extract structured data from images using vision-capable models:
+
+```rust
+use instructors::ImageInput;
+
+// from URL
+let result = client.extract::<Description>("Describe this image")
+    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .model("gpt-4o")
+    .await?;
+
+// from base64
+let result = client.extract::<Description>("Describe this image")
+    .image(ImageInput::Base64 {
+        media_type: "image/png".into(),
+        data: base64_string,
+    })
+    .await?;
+
+// multiple images
+let result = client.extract::<Comparison>("Compare these images")
+    .images(vec![
+        ImageInput::Url("https://example.com/a.jpg".into()),
+        ImageInput::Url("https://example.com/b.jpg".into()),
+    ])
+    .await?;
+```
+
+## Provider Fallback
+
+Chain multiple providers for automatic failover:
+
+```rust
+let client = Client::openai("sk-...")
+    .with_fallback(Client::anthropic("sk-ant-..."))
+    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
+
+// tries OpenAI first → Anthropic on failure → DeepSeek as last resort
+let result = client.extract::<Contact>("...").await?;
+```
+
+Each fallback is tried in order after the primary provider exhausts its retries.
+
+## Validation
+
+Validate extracted data with automatic retry — invalid results are fed back to the LLM with error details.
+
+### Closure-based
+
+```rust
+let user: User = client.extract("...")
+    .validate(|u: &User| {
+        if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
+    })
+    .await?.value;
+```
+
+### Trait-based
+
+```rust
+use instructors::prelude::*;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Email { address: String }
+
+impl Validate for Email {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.address.contains('@') { Ok(()) }
+        else { Err("invalid email".into()) }
+    }
+}
+
+let email: Email = client.extract("...").validated().await?.value;
+```
+
+## List Extraction
+
+Extract multiple items from text with `extract_many`:
+
+```rust
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Entity {
+    name: String,
+    entity_type: String,
+}
+
+let entities: Vec<Entity> = client
+    .extract_many("Apple CEO Tim Cook met Google CEO Sundar Pichai")
+    .await?.value;
+```
+
+## Batch Processing
+
+Process multiple prompts concurrently with configurable concurrency:
+
+```rust
+let prompts = vec!["review 1".into(), "review 2".into(), "review 3".into()];
+
+let results = client
+    .extract_batch::<Review>(prompts)
+    .concurrency(5)
+    .validate(|r: &Review| { /* ... */ Ok(()) })
+    .run()
+    .await;
+
+// each result is independent — partial failures don't affect others
+for result in results {
+    match result {
+        Ok(r) => println!("{:?}", r.value),
+        Err(e) => eprintln!("failed: {e}"),
+    }
+}
+```
+
+## Multi-turn Conversations
+
+Pass message history for context-aware extraction:
+
+```rust
+use instructors::Message;
+
+let result = client.extract::<Summary>("summarize the above")
+    .messages(vec![
+        Message::user("Here is a long document..."),
+        Message::assistant("I see the document."),
+    ])
+    .await?;
 ```
 
 ## Classification
@@ -66,16 +237,11 @@ Enums work naturally for classification tasks:
 
 ```rust
 #[derive(Debug, Deserialize, JsonSchema)]
-enum Sentiment {
-    Positive,
-    Negative,
-    Neutral,
-}
+enum Sentiment { Positive, Negative, Neutral }
 
 let sentiment: Sentiment = client
     .extract("This product is amazing!")
-    .await?
-    .value;
+    .await?.value;
 ```
 
 ## Nested Types
@@ -96,12 +262,34 @@ struct Author {
     affiliation: Option<String>,
 }
 
-let paper: Paper = client
-    .extract(&pdf_text)
-    .model("gpt-4o")
-    .await?
-    .value;
+let paper: Paper = client.extract(&pdf_text).model("gpt-4o").await?.value;
 ```
+
+## Retry & Timeout
+
+Enable exponential backoff on HTTP 429/503 errors and set an overall request timeout:
+
+```rust
+use std::time::Duration;
+use instructors::BackoffConfig;
+
+let client = Client::openai("sk-...")
+    .with_retry_backoff(BackoffConfig::default())  // 500ms base, 30s cap, 3 retries
+    .with_timeout(Duration::from_secs(120));        // overall timeout
+
+// per-request override
+let result = client.extract::<Contact>("...")
+    .retry_backoff(BackoffConfig {
+        base_delay: Duration::from_millis(200),
+        max_delay: Duration::from_secs(10),
+        jitter: true,
+        max_http_retries: 5,
+    })
+    .timeout(Duration::from_secs(30))
+    .await?;
+```
+
+Without backoff configured, HTTP 429/503 errors fail immediately (default behavior unchanged).
 
 ## Configuration
 
@@ -112,8 +300,10 @@ let result: MyStruct = client
     .system("You are an expert...")   // custom system prompt
     .temperature(0.0)                 // deterministic output
     .max_tokens(2048)                 // limit output tokens
-    .max_retries(3)                   // retry on parse failure
+    .max_retries(3)                   // retry on parse/validation failure
     .context("extra context...")      // append to prompt
+    .retry_backoff(BackoffConfig::default()) // HTTP 429/503 backoff
+    .timeout(Duration::from_secs(30))        // overall timeout
     .await?
     .value;
 ```
@@ -139,7 +329,7 @@ let c: TypeC = client.extract("...").model("gpt-4o").await?.value;
 
 ## Cost Tracking
 
-Built-in token counting and cost estimation via [tiktoken](https://github.com/goliajp/tokenrs):
+Built-in token counting and cost estimation via [tiktoken](https://crates.io/crates/tiktoken):
 
 ```rust
 let result = client.extract::<Contact>("...").await?;
@@ -154,18 +344,53 @@ Disable with `default-features = false`:
 
 ```toml
 [dependencies]
-instructors = { version = "0.1", default-features = false }
+instructors = { version = "1", default-features = false }
+```
+
+## JSON Repair
+
+When an LLM returns malformed JSON — trailing commas, single quotes, unquoted keys, markdown code fences, etc. — instructors automatically attempts to repair the output before deserialization. If repair succeeds, the fixed JSON is parsed directly without burning a retry. This saves both tokens and latency, especially with smaller or open-source models that are more likely to produce slightly broken output.
+
+Repair is transparent: you don't need to configure anything. It runs on every response before `serde_json` parsing, and falls back to the normal retry path if the output can't be fixed.
+
+## Lifecycle Hooks
+
+Observe requests and responses:
+
+```rust
+let result = client.extract::<Contact>("...")
+    .on_request(|model, prompt| {
+        println!("[req] model={model}, prompt_len={}", prompt.len());
+    })
+    .on_response(|usage| {
+        println!("[res] tokens={}, cost={:?}", usage.total_tokens, usage.cost);
+    })
+    .await?;
 ```
 
 ## How It Works
 
 1. `#[derive(JsonSchema)]` generates a JSON Schema from your Rust type (via [schemars](https://crates.io/crates/schemars))
-2. The schema is transformed for the target provider:
+2. Schema is cached per type (thread-local, zero lock contention)
+3. The schema is transformed for the target provider:
    - **OpenAI**: wrapped in `response_format` with strict mode (`additionalProperties: false`, all fields required)
    - **Anthropic**: wrapped as a `tool` with `input_schema`, forced via `tool_choice`
-3. LLM is constrained to produce valid JSON matching the schema
-4. Response is deserialized with `serde_json::from_str::<T>()`
-5. On parse failure, error feedback is sent back and the request is retried
+   - **Gemini**: passed as `response_schema` with `response_mime_type: "application/json"`
+4. LLM is constrained to produce valid JSON matching the schema
+5. Response JSON is automatically repaired if malformed (trailing commas, single quotes, unquoted keys, markdown fences)
+6. Response is deserialized with `serde_json::from_str::<T>()`
+7. If `Validate` trait or `.validate()` closure is present, validation runs
+8. On parse/validation failure, error feedback is sent back and the request is retried
+
+## Ecosystem
+
+instructors is part of [airs](https://github.com/goliajp/airs) (AI in Rust Series):
+
+| Crate | Description |
+|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
+| [embedrs](https://crates.io/crates/embedrs) | Unified embedding — cloud APIs + local inference, one interface |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | AI-native text chunking — recursive, markdown, semantic |
 
 ## License
 
