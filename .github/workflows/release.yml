@@ -35,6 +35,6 @@ jobs:
           else
             echo "Release $GITHUB_REF_NAME" > .release-notes.md
           fi
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body_path: .release-notes.md
