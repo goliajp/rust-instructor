@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2] - 2026-04-24
+
+### Changed
+- Migrated from `goliajp/airs` mono-repo to standalone `goliajp/rust-instructor`.
+  No code changes; `repository` URL updated. `tiktoken` dep switched from workspace
+  path to crates.io (`tiktoken = "3.1"`, optional, behind `cost-tracking` feature).
+
 ## [1.1.2] - 2026-03-08
 
 ### Added
