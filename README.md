@@ -386,15 +386,7 @@ let result = client.extract::<Contact>("...")
 
 ## Ecosystem
 
-Part of GOLIA's Rust AI-infrastructure family — independent crates in their own repos, composable through crates.io:
-
-| Crate / Package | Repo | Description |
-|---|---|---|
-| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | High-performance BPE tokenizer — 9 encodings, 57 models, multi-provider pricing |
-| [@goliapkg/tiktoken-wasm](https://www.npmjs.com/package/@goliapkg/tiktoken-wasm) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | WASM bindings for tiktoken — browser / Node.js |
-| **instructors** (this crate) | [rust-instructor](https://github.com/goliajp/rust-instructor) | Type-safe structured output extraction from LLMs |
-| [embedrs](https://crates.io/crates/embedrs) | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | Unified embedding — cloud APIs + local inference, one interface |
-| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI-native text chunking — recursive, markdown-aware, semantic |
+[tiktoken](https://crates.io/crates/tiktoken) · [@goliapkg/tiktoken-wasm](https://www.npmjs.com/package/@goliapkg/tiktoken-wasm) · **instructors** · [chunkedrs](https://crates.io/crates/chunkedrs) · [embedrs](https://crates.io/crates/embedrs)
 
 <!-- ECOSYSTEM END -->
 
