@@ -382,16 +382,21 @@ let result = client.extract::<Contact>("...")
 7. If `Validate` trait or `.validate()` closure is present, validation runs
 8. On parse/validation failure, error feedback is sent back and the request is retried
 
+<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+
 ## Ecosystem
 
-Part of a family of independent AI-infrastructure crates by GOLIA, each in its own repo:
+Part of GOLIA's Rust AI-infrastructure family — independent crates in their own repos, composable through crates.io:
 
-| Crate | Repo | Description |
+| Crate / Package | Repo | Description |
 |---|---|---|
-| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
+| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | High-performance BPE tokenizer — 9 encodings, 57 models, multi-provider pricing |
+| [@goliapkg/tiktoken-wasm](https://www.npmjs.com/package/@goliapkg/tiktoken-wasm) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | WASM bindings for tiktoken — browser / Node.js |
+| **instructors** (this crate) | [rust-instructor](https://github.com/goliajp/rust-instructor) | Type-safe structured output extraction from LLMs |
 | [embedrs](https://crates.io/crates/embedrs) | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | Unified embedding — cloud APIs + local inference, one interface |
-| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI-native text chunking — recursive, markdown, semantic |
-| **instructors** | [rust-instructor](https://github.com/goliajp/rust-instructor) | Type-safe structured output extraction from LLMs (this crate) |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI-native text chunking — recursive, markdown-aware, semantic |
+
+<!-- ECOSYSTEM END -->
 
 ## License
 
