@@ -382,7 +382,7 @@ let result = client.extract::<Contact>("...")
 7. If `Validate` trait or `.validate()` closure is present, validation runs
 8. On parse/validation failure, error feedback is sent back and the request is retried
 
-<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
 
 ## Ecosystem
 
