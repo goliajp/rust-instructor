@@ -382,7 +382,7 @@ let result = client.extract::<Contact>("...")
 7. `Validate` トレイトまたは `.validate()` クロージャが設定されている場合、バリデーションを実行
 8. パースまたはバリデーションの失敗時、エラーフィードバックを送信してリクエストをリトライ
 
-<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
 
 ## エコシステム
 

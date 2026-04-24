@@ -382,7 +382,7 @@ let result = client.extract::<Contact>("...")
 7. 若实现了 `Validate` trait 或设置了 `.validate()` 闭包，则执行校验
 8. 解析或校验失败时，将错误反馈发回 LLM 并重试
 
-<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
 
 ## 生态系统
 
