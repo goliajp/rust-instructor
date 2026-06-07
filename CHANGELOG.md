@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.4] - 2026-06-07
+
+### Changed
+- 防腐 maintenance release. No behavior change.
+- Drop `rust-version = "1.94"` pin from `Cargo.toml` — the crate tracks
+  stable; the pin was a stale snapshot left over from the migration.
+- Switch `benches/schema.rs` from deprecated `criterion::black_box` to
+  `std::hint::black_box` (criterion 0.8 deprecation).
+- Clean up ~89 `needless_borrows_for_generic_args` clippy hits across
+  integration tests (mostly `&server.uri()` → `server.uri()`).
+
 ## [1.3.3] - 2026-04-24
 
 ### Changed
