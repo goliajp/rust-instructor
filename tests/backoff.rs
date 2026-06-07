@@ -54,7 +54,7 @@ async fn retry_429_with_backoff() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_retry_backoff(BackoffConfig {
+        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
             base_delay: std::time::Duration::from_millis(10),
             max_http_retries: 3,
             jitter: false,
@@ -88,7 +88,7 @@ async fn retry_503_with_backoff() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_retry_backoff(BackoffConfig {
+        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
             base_delay: std::time::Duration::from_millis(10),
             max_http_retries: 3,
             jitter: false,
@@ -111,7 +111,7 @@ async fn no_retry_400() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_retry_backoff(BackoffConfig {
+        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
             base_delay: std::time::Duration::from_millis(10),
             max_http_retries: 3,
             jitter: false,
@@ -137,7 +137,7 @@ async fn no_retry_401() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_retry_backoff(BackoffConfig {
+        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
             base_delay: std::time::Duration::from_millis(10),
             max_http_retries: 3,
             jitter: false,
@@ -174,14 +174,14 @@ async fn exhaust_http_retries_then_fallback() {
         .mount(&fallback)
         .await;
 
-    let client = Client::openai_compatible("key", &primary.uri())
+    let client = Client::openai_compatible("key", primary.uri())
         .with_retry_backoff(BackoffConfig {
             base_delay: std::time::Duration::from_millis(10),
             max_http_retries: 2,
             jitter: false,
             ..Default::default()
         })
-        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+        .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Fallback");
@@ -221,7 +221,7 @@ async fn backoff_with_parse_retry() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_retry_backoff(BackoffConfig {
+        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
             base_delay: std::time::Duration::from_millis(10),
             max_http_retries: 2,
             jitter: false,
@@ -249,7 +249,7 @@ async fn no_backoff_by_default() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
     match err {
         Error::Api { status, .. } => assert_eq!(status, 429),

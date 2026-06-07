@@ -60,7 +60,7 @@ async fn extract_contact() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("ant-key", &server.uri());
+    let client = Client::anthropic_compatible("ant-key", server.uri());
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Alice");
@@ -83,7 +83,7 @@ async fn extract_optional_null() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client.extract::<Contact>("Bob").await.unwrap();
 
     assert_eq!(result.value.name, "Bob");
@@ -101,7 +101,7 @@ async fn api_error_401() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("bad-key", &server.uri());
+    let client = Client::anthropic_compatible("bad-key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -126,7 +126,7 @@ async fn api_error_429() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -160,7 +160,7 @@ async fn no_tool_use_block() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     assert!(matches!(err, Error::Other(_)));
@@ -189,7 +189,7 @@ async fn no_usage_in_response() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client.extract::<Contact>("test").await.unwrap();
 
     assert_eq!(result.usage.input_tokens, 0);
@@ -222,7 +222,7 @@ async fn retry_on_bad_json_from_tool() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .max_retries(2)
@@ -246,7 +246,7 @@ async fn trait_validation_with_anthropic() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<StrictContact>("Alice")
         .validated()
@@ -270,7 +270,7 @@ async fn trait_validation_fails_anthropic() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let err = client
         .extract::<StrictContact>("Bob")
         .validated()
@@ -294,7 +294,7 @@ async fn custom_model_anthropic() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .model("claude-opus-4-20250514")
@@ -317,7 +317,7 @@ async fn extract_with_image_anthropic() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what animal is this?")
         .image(ImageInput::Base64 {
@@ -399,7 +399,7 @@ async fn extract_with_streaming_anthropic() {
     let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let chunks_clone = chunks.clone();
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .on_stream(move |chunk| {
@@ -441,7 +441,7 @@ async fn streaming_multibyte_utf8_anthropic() {
     let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let chunks_clone = chunks.clone();
 
-    let client = Client::anthropic_compatible("key", &server.uri());
+    let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .on_stream(move |chunk| {
@@ -482,8 +482,8 @@ async fn cross_provider_fallback_openai_to_anthropic() {
         .mount(&anthropic_server)
         .await;
 
-    let client = Client::openai_compatible("key", &openai_server.uri()).with_fallback(
-        Client::anthropic_compatible("ant-key", &anthropic_server.uri()),
+    let client = Client::openai_compatible("key", openai_server.uri()).with_fallback(
+        Client::anthropic_compatible("ant-key", anthropic_server.uri()),
     );
 
     let result = client

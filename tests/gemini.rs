@@ -40,7 +40,7 @@ async fn extract_contact() {
         .mount(&server)
         .await;
 
-    let client = Client::gemini_compatible("test-key", &server.uri());
+    let client = Client::gemini_compatible("test-key", server.uri());
     let result = client
         .extract::<Contact>("extract contact from: John Doe john@example.com")
         .await
@@ -66,7 +66,7 @@ async fn extract_with_optional_null() {
         .mount(&server)
         .await;
 
-    let client = Client::gemini_compatible("key", &server.uri());
+    let client = Client::gemini_compatible("key", server.uri());
     let result = client.extract::<Contact>("Jane").await.unwrap();
 
     assert_eq!(result.value.name, "Jane");
@@ -97,7 +97,7 @@ async fn retry_on_invalid_json() {
         .mount(&server)
         .await;
 
-    let client = Client::gemini_compatible("key", &server.uri());
+    let client = Client::gemini_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .max_retries(2)
@@ -119,7 +119,7 @@ async fn api_error_status() {
         .mount(&server)
         .await;
 
-    let client = Client::gemini_compatible("key", &server.uri());
+    let client = Client::gemini_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -165,7 +165,7 @@ async fn extract_with_streaming() {
         .mount(&server)
         .await;
 
-    let client = Client::gemini_compatible("key", &server.uri());
+    let client = Client::gemini_compatible("key", server.uri());
     let chunks: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let chunks_clone = chunks.clone();
@@ -197,7 +197,7 @@ async fn extract_with_image() {
         .mount(&server)
         .await;
 
-    let client = Client::gemini_compatible("key", &server.uri());
+    let client = Client::gemini_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what is this?")
         .image(ImageInput::Base64 {
@@ -225,7 +225,7 @@ async fn gemini_auth_in_query_param() {
         .mount(&server)
         .await;
 
-    let client = Client::gemini_compatible("secret-api-key", &server.uri());
+    let client = Client::gemini_compatible("secret-api-key", server.uri());
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Auth");
 }

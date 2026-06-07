@@ -74,7 +74,7 @@ async fn extract_many_entities() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract_many::<Entity>("Apple CEO Tim Cook")
         .await
@@ -96,7 +96,7 @@ async fn extract_many_empty() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract_many::<Entity>("no entities here")
         .await
@@ -121,7 +121,7 @@ async fn message_history() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Summary>("summarize the above")
         .messages(vec![
@@ -164,7 +164,7 @@ async fn on_request_hook() {
     let call_count = Arc::new(AtomicU32::new(0));
     let count = call_count.clone();
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test prompt")
         .on_request(move |_model, _prompt| {
@@ -194,7 +194,7 @@ async fn on_response_hook() {
     let total_tokens = Arc::new(AtomicU32::new(0));
     let tokens = total_tokens.clone();
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let _ = client
         .extract::<Contact>("test")
         .on_response(move |usage| {
@@ -232,7 +232,7 @@ async fn hooks_called_on_retry() {
     let request_count = Arc::new(AtomicU32::new(0));
     let count = request_count.clone();
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let _ = client
         .extract::<Contact>("test")
         .max_retries(1)
@@ -261,7 +261,7 @@ async fn classification_validated() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Classification>("AI and machine learning")
         .validated()
@@ -287,7 +287,7 @@ async fn extract_many_with_validation() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract_many::<Contact>("some text with contacts")
         .validate(|contacts: &Vec<Contact>| {
@@ -316,7 +316,7 @@ async fn extract_with_context_and_history() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("extract the contact")
         .messages(vec![Message::user("Here is a business card image...")])

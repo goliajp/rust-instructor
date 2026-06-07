@@ -51,7 +51,7 @@ async fn batch_basic() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let prompts = vec!["prompt1".into(), "prompt2".into(), "prompt3".into()];
     let results = client
         .extract_batch::<Contact>(prompts)
@@ -79,7 +79,7 @@ async fn batch_with_model() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let results = client
         .extract_batch::<Contact>(vec!["a".into(), "b".into()])
         .model("gpt-4o-mini")
@@ -105,7 +105,7 @@ async fn batch_partial_failure() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let results = client
         .extract_batch::<Contact>(vec!["a".into(), "b".into()])
         .max_retries(0)
@@ -131,7 +131,7 @@ async fn batch_with_validation() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let results = client
         .extract_batch::<StrictUser>(vec!["a".into(), "b".into()])
         .validate(|u: &StrictUser| {
@@ -161,7 +161,7 @@ async fn batch_validation_fails() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let results = client
         .extract_batch::<StrictUser>(vec!["a".into()])
         .validate(|u: &StrictUser| {
@@ -182,7 +182,7 @@ async fn batch_validation_fails() {
 #[tokio::test]
 async fn batch_empty() {
     let server = MockServer::start().await;
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let results = client.extract_batch::<Contact>(vec![]).run().await;
 
     assert!(results.is_empty());
@@ -201,7 +201,7 @@ async fn batch_concurrency_one() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let results = client
         .extract_batch::<Contact>(vec!["a".into(), "b".into(), "c".into()])
         .concurrency(1) // sequential
@@ -235,7 +235,7 @@ async fn batch_concurrency_one_with_failure() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let results = client
         .extract_batch::<Contact>(vec!["good".into(), "bad".into()])
         .concurrency(1)
@@ -264,7 +264,7 @@ async fn batch_preserves_order() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let prompts: Vec<String> = (0..5).map(|i| format!("prompt {i}")).collect();
     let results = client
         .extract_batch::<Contact>(prompts)
