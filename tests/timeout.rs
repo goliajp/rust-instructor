@@ -47,7 +47,7 @@ async fn timeout_triggers() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_timeout(Duration::from_millis(100));
+        Client::openai_compatible("key", server.uri()).with_timeout(Duration::from_millis(100));
     let err = client.extract::<Contact>("test").await.unwrap_err();
     assert!(matches!(err, Error::Timeout(_)));
 }
@@ -67,7 +67,7 @@ async fn timeout_not_triggered() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_timeout(Duration::from_secs(5));
+        Client::openai_compatible("key", server.uri()).with_timeout(Duration::from_secs(5));
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Fast");
 }
@@ -88,7 +88,7 @@ async fn timeout_covers_retries() {
         .await;
 
     let client =
-        Client::openai_compatible("key", &server.uri()).with_timeout(Duration::from_millis(100));
+        Client::openai_compatible("key", server.uri()).with_timeout(Duration::from_millis(100));
     let err = client
         .extract::<Contact>("test")
         .max_retries(10)
@@ -110,7 +110,7 @@ async fn timeout_covers_backoff() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri())
+    let client = Client::openai_compatible("key", server.uri())
         .with_retry_backoff(BackoffConfig {
             base_delay: Duration::from_millis(200),
             max_http_retries: 10,
@@ -147,7 +147,7 @@ async fn per_request_timeout_override() {
 
     // client timeout is generous, but per-request timeout is tight
     let client =
-        Client::openai_compatible("key", &server.uri()).with_timeout(Duration::from_secs(10));
+        Client::openai_compatible("key", server.uri()).with_timeout(Duration::from_secs(10));
     let err = client
         .extract::<Contact>("test")
         .timeout(Duration::from_millis(50))

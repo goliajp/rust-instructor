@@ -71,7 +71,7 @@ async fn extract_contact() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("test-key", &server.uri());
+    let client = Client::openai_compatible("test-key", server.uri());
     let result = client
         .extract::<Contact>("extract contact from: John Doe john@example.com")
         .await
@@ -99,7 +99,7 @@ async fn extract_with_optional_null() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client.extract::<Contact>("Jane").await.unwrap();
 
     assert_eq!(result.value.name, "Jane");
@@ -117,7 +117,7 @@ async fn extract_enum() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client.extract::<Sentiment>("I love it!").await.unwrap();
 
     assert!(matches!(result.value, Sentiment::Positive));
@@ -146,7 +146,7 @@ async fn retry_on_invalid_json() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .max_retries(2)
@@ -170,7 +170,7 @@ async fn exhaust_retries() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let err = client
         .extract::<Contact>("test")
         .max_retries(1)
@@ -191,7 +191,7 @@ async fn api_error_status() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -216,7 +216,7 @@ async fn api_error_500() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -239,7 +239,7 @@ async fn closure_validation_passes() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<UserProfile>("Alice, 30")
         .validate(|u: &UserProfile| {
@@ -283,7 +283,7 @@ async fn closure_validation_retries() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<UserProfile>("Bob")
         .validate(|u: &UserProfile| {
@@ -315,7 +315,7 @@ async fn trait_validation_passes() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<UserProfile>("Alice")
         .validated()
@@ -339,7 +339,7 @@ async fn trait_validation_fails_exhausted() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let err = client
         .extract::<UserProfile>("someone old")
         .validated()
@@ -364,7 +364,7 @@ async fn custom_model() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .model("gpt-4o-mini")
@@ -388,7 +388,7 @@ async fn custom_system_prompt() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .system("be very precise")
@@ -412,7 +412,7 @@ async fn context_appended() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .context("from a business card")
@@ -446,7 +446,7 @@ async fn no_usage_in_response() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client.extract::<Contact>("test").await.unwrap();
 
     assert_eq!(result.usage.input_tokens, 0);
@@ -471,7 +471,7 @@ async fn empty_choices_error() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     assert!(matches!(err, Error::Other(_)));
@@ -488,7 +488,7 @@ async fn zero_retries_no_retry() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let err = client
         .extract::<Contact>("test")
         .max_retries(0)
@@ -512,7 +512,7 @@ async fn client_with_defaults() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri())
+    let client = Client::openai_compatible("key", server.uri())
         .with_model("gpt-4o-mini")
         .with_system("extract data")
         .with_temperature(0.5)
@@ -537,7 +537,7 @@ async fn extract_with_image_url() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what animal is this?")
         .image(ImageInput::Url("https://example.com/cat.jpg".into()))
@@ -561,7 +561,7 @@ async fn extract_with_image_base64() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what animal is this?")
         .image(ImageInput::Base64 {
@@ -588,7 +588,7 @@ async fn extract_with_multiple_images() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("compare these images")
         .images(vec![
@@ -625,8 +625,8 @@ async fn fallback_to_second_provider() {
         .mount(&fallback)
         .await;
 
-    let client = Client::openai_compatible("key", &primary.uri())
-        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+    let client = Client::openai_compatible("key", primary.uri())
+        .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Fallback");
@@ -658,8 +658,8 @@ async fn fallback_not_used_on_success() {
         .mount(&fallback)
         .await;
 
-    let client = Client::openai_compatible("key", &primary.uri())
-        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+    let client = Client::openai_compatible("key", primary.uri())
+        .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Primary");
@@ -682,8 +682,8 @@ async fn fallback_chain_all_fail() {
         .mount(&fallback)
         .await;
 
-    let client = Client::openai_compatible("key", &primary.uri())
-        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+    let client = Client::openai_compatible("key", primary.uri())
+        .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let err = client
         .extract::<Contact>("test")
@@ -725,7 +725,7 @@ async fn streaming_with_empty_data_lines() {
     sse.push_str("data: \n\n"); // empty data line
     let chunk1 = serde_json::json!({"choices": [{"delta": {"content": r#"{"name":"#}}]});
     sse.push_str(&format!("data: {chunk1}\n\n"));
-    sse.push_str("\n"); // blank line
+    sse.push('\n'); // blank line
     let chunk2 =
         serde_json::json!({"choices": [{"delta": {"content": r#" "Empty", "email": null}"#}}]});
     sse.push_str(&format!("data: {chunk2}\n\n"));
@@ -745,7 +745,7 @@ async fn streaming_with_empty_data_lines() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .on_stream(|_| {})
@@ -782,7 +782,7 @@ async fn streaming_multibyte_utf8_split() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .on_stream(|_| {})
@@ -823,8 +823,8 @@ async fn fallback_retry_count_accumulates() {
         .mount(&fallback)
         .await;
 
-    let client = Client::openai_compatible("key", &primary.uri())
-        .with_fallback(Client::openai_compatible("key2", &fallback.uri()));
+    let client = Client::openai_compatible("key", primary.uri())
+        .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let result = client
         .extract::<Contact>("test")
@@ -858,7 +858,7 @@ async fn extract_with_streaming() {
     let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let chunks_clone = chunks.clone();
 
-    let client = Client::openai_compatible("key", &server.uri());
+    let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
         .on_stream(move |chunk| {
@@ -894,7 +894,7 @@ async fn json_repair_trailing_comma() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("test-key", &server.uri());
+    let client = Client::openai_compatible("test-key", server.uri());
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Alice");
@@ -917,7 +917,7 @@ async fn json_repair_single_quotes() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("test-key", &server.uri());
+    let client = Client::openai_compatible("test-key", server.uri());
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Bob");
@@ -938,7 +938,7 @@ async fn json_repair_markdown_fenced() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("test-key", &server.uri());
+    let client = Client::openai_compatible("test-key", server.uri());
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Carol");
@@ -960,7 +960,7 @@ async fn json_repair_unquoted_keys() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("test-key", &server.uri());
+    let client = Client::openai_compatible("test-key", server.uri());
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Dave");
