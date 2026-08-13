@@ -862,7 +862,7 @@ where
             // success
             #[cfg(feature = "cost-tracking")]
             {
-                usage.cost = crate::pricing::estimate_cost(
+                usage.cost = tiktoken::pricing::estimate_cost(
                     model,
                     usage.input_tokens as u64,
                     usage.output_tokens as u64,

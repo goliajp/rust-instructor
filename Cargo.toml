@@ -23,7 +23,10 @@ thiserror = "2"
 rand = "0.10"
 # only `tiktoken::pricing` is used, never the tokenizer — skipping the default
 # `vocabs-all` feature keeps ~5 MB of vocabulary data out of the binary.
-tiktoken = { version = "4", optional = true, default-features = false }
+# 4.1.1 is a floor: 4.1 is the release whose `estimate_cost` resolves the ids
+# the provider APIs actually accept, which this crate used to normalize itself;
+# 4.1.1 is where the vendor coverage behind those ids caught up.
+tiktoken = { version = "4.1.1", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
 jsonrepair = "0.1"
 
