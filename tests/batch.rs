@@ -82,7 +82,7 @@ async fn batch_with_model() {
     let client = Client::openai_compatible("key", server.uri());
     let results = client
         .extract_batch::<Contact>(vec!["a".into(), "b".into()])
-        .model("gpt-4o-mini")
+        .model("gpt-5.6-luna")
         .system("extract")
         .temperature(0.5)
         .max_tokens(1024)

@@ -60,11 +60,38 @@ instructors = "1"
 | Provider | Constructor | Mechanism |
 |---|---|---|
 | OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
-| Anthropic | `Client::anthropic(key)` | `tool_use` with forced tool choice |
+| Anthropic | `Client::anthropic(key)` | forced `tool_use`, or native `output_config` (opt-in) |
 | OpenAI-compatible | `Client::openai_compatible(key, url)` | Same as OpenAI (DeepSeek, Together, etc.) |
 | Anthropic-compatible | `Client::anthropic_compatible(key, url)` | Same as Anthropic |
 | Google Gemini | `Client::gemini(key)` | `response_schema` structured JSON |
 | Gemini-compatible | `Client::gemini_compatible(key, url)` | Same as Gemini |
+
+### Default models
+
+When no model is set, each provider uses its current balanced tier:
+
+| Provider | Default |
+|---|---|
+| OpenAI | `gpt-5.6-terra` |
+| Anthropic | `claude-sonnet-5` |
+| Gemini | `gemini-3.6-flash` |
+
+Model generations turn over roughly twice a year and retired ids stop
+resolving, so these move with every minor release. Pin `.with_model("...")` if
+you need one specific model to survive upgrades.
+
+### Anthropic native structured outputs
+
+Anthropic extraction defaults to a forced `tool_use` call, which every Claude
+generation and every Anthropic-compatible proxy accepts. On the generations that
+support it, `output_config.format` constrains the response text directly with no
+tool round-trip:
+
+```rust
+let client = Client::anthropic("sk-ant-...")
+    .with_anthropic_structured_output();
+```
+
 
 ```rust
 // OpenAI
@@ -110,7 +137,7 @@ use instructors::ImageInput;
 // from URL
 let result = client.extract::<Description>("Describe this image")
     .image(ImageInput::Url("https://example.com/photo.jpg".into()))
-    .model("gpt-4o")
+    .model("gpt-5.6-terra")
     .await?;
 
 // from base64
@@ -262,7 +289,7 @@ struct Author {
     affiliation: Option<String>,
 }
 
-let paper: Paper = client.extract(&pdf_text).model("gpt-4o").await?.value;
+let paper: Paper = client.extract(&pdf_text).model("gpt-5.6-terra").await?.value;
 ```
 
 ## Retry & Timeout
@@ -296,7 +323,7 @@ Without backoff configured, HTTP 429/503 errors fail immediately (default behavi
 ```rust
 let result: MyStruct = client
     .extract("input text")
-    .model("gpt-4o-mini")            // override model
+    .model("gpt-5.6-luna")            // override model
     .system("You are an expert...")   // custom system prompt
     .temperature(0.0)                 // deterministic output
     .max_tokens(2048)                 // limit output tokens
@@ -308,13 +335,18 @@ let result: MyStruct = client
     .value;
 ```
 
+> **`temperature` is not sent to Anthropic.** The current Claude generations
+> reject a non-default `temperature` with a 400, so the Anthropic request never
+> carries it and the setting has no effect there. It is sent to the OpenAI and
+> Gemini families as usual.
+
 ## Client Defaults
 
 Set defaults once, override per-request:
 
 ```rust
 let client = Client::openai("sk-...")
-    .with_model("gpt-4o-mini")
+    .with_model("gpt-5.6-luna")
     .with_temperature(0.0)
     .with_max_retries(3)
     .with_system("Extract data precisely.");
@@ -324,7 +356,7 @@ let a: TypeA = client.extract("...").await?.value;
 let b: TypeB = client.extract("...").await?.value;
 
 // override for a specific request
-let c: TypeC = client.extract("...").model("gpt-4o").await?.value;
+let c: TypeC = client.extract("...").model("gpt-5.6-terra").await?.value;
 ```
 
 ## Cost Tracking

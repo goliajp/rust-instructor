@@ -21,7 +21,7 @@ async fn main() -> instructors::Result<()> {
         .extract::<Summary>(
             "Rust is a systems programming language focused on safety and performance.",
         )
-        .model("gpt-4o-mini")
+        .model("gpt-5.6-luna")
         .on_stream(|chunk| {
             print!("{chunk}");
         })
