@@ -68,6 +68,11 @@ where
     }
 
     /// Set the temperature for all extractions.
+    ///
+    /// Not sent to Anthropic. The current Claude generations reject a
+    /// non-default `temperature` with a 400, so the Anthropic request never
+    /// carries it and this setting has no effect there. Sent to the OpenAI and
+    /// Gemini families as usual.
     pub fn temperature(self, temp: f64) -> Self {
         Self {
             temperature: Some(temp),
@@ -193,7 +198,7 @@ mod tests {
     #[test]
     fn builder_inherits_client_defaults() {
         let client = Client::openai("key")
-            .with_model("gpt-4o-mini")
+            .with_model("gpt-5.6-luna")
             .with_system("extract data")
             .with_temperature(0.5)
             .with_max_retries(5)
@@ -208,7 +213,7 @@ mod tests {
         assert_eq!(builder.concurrency, 5);
         assert_eq!(builder.max_retries, 5);
         assert_eq!(builder.max_tokens, 2048);
-        assert_eq!(builder.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(builder.system.as_deref(), Some("extract data"));
         assert_eq!(builder.temperature, Some(0.5));
         assert!(builder.validator.is_none());
@@ -227,7 +232,7 @@ mod tests {
         let builder = BatchBuilder::<D>::new(&client, vec!["a".into()]);
         // inherits client defaults
         assert_eq!(builder.max_retries, 2);
-        assert_eq!(builder.max_tokens, 4096);
+        assert_eq!(builder.max_tokens, 16384);
         assert_eq!(builder.temperature, Some(0.0));
         assert!(builder.model.is_none());
         assert!(builder.system.is_none());
@@ -243,14 +248,14 @@ mod tests {
         }
 
         let builder = BatchBuilder::<D>::new(&client, vec!["a".into()])
-            .model("gpt-4o-mini")
+            .model("gpt-5.6-luna")
             .system("test")
             .temperature(0.5)
             .max_tokens(1024)
             .max_retries(3)
             .concurrency(10);
 
-        assert_eq!(builder.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(builder.system.as_deref(), Some("test"));
         assert_eq!(builder.temperature, Some(0.5));
         assert_eq!(builder.max_tokens, 1024);

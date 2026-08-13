@@ -29,7 +29,7 @@ async fn main() -> instructors::Result<()> {
     // extract structured data
     let result: ExtractResult<Contact> = client
         .extract("Please contact John Doe at john@example.com or call 555-0123")
-        .model("gpt-4o-mini")
+        .model("gpt-5.6-luna")
         .await?;
 
     println!("Contact: {:#?}", result.value);
@@ -44,7 +44,7 @@ async fn main() -> instructors::Result<()> {
     // classify text
     let sentiment: Sentiment = client
         .extract("This product is absolutely amazing, best purchase ever!")
-        .model("gpt-4o-mini")
+        .model("gpt-5.6-luna")
         .await?
         .value;
 
