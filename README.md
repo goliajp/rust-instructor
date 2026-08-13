@@ -372,6 +372,11 @@ println!("cost:   ${:.6}", result.usage.cost.unwrap_or(0.0));
 println!("retries: {}", result.usage.retries);
 ```
 
+`cost` is `None` for a model the price table does not carry. Model ids are
+resolved by `tiktoken`, so the id you sent to the provider — dashes where the
+table uses a dot, a release-date suffix, Bedrock or Vertex decoration — prices
+as that model rather than silently costing nothing.
+
 Disable with `default-features = false`:
 
 ```toml
