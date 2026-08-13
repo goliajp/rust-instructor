@@ -20,7 +20,7 @@ async fn main() -> instructors::Result<()> {
 
     let result = client
         .extract::<ImageDescription>("Describe this image in detail")
-        .model("gpt-4o")
+        .model("gpt-5.6-terra")
         .image(ImageInput::Url(
             "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Rust_programming_language_black_logo.svg/240px-Rust_programming_language_black_logo.svg.png".into(),
         ))

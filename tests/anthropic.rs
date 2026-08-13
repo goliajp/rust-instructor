@@ -494,3 +494,155 @@ async fn cross_provider_fallback_openai_to_anthropic() {
 
     assert_eq!(result.value.name, "Cross");
 }
+
+// --- native structured outputs (opt-in) ---
+
+fn anthropic_text_response(json_text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "content": [{ "type": "text", "text": json_text }],
+        "usage": { "input_tokens": 40, "output_tokens": 15 }
+    })
+}
+
+async fn sent_body(server: &MockServer) -> serde_json::Value {
+    let requests = server.received_requests().await.unwrap();
+    serde_json::from_slice(&requests[0].body).unwrap()
+}
+
+#[tokio::test]
+async fn structured_output_sends_output_config() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(anthropic_text_response(
+                r#"{"name": "Native", "email": "n@t.com"}"#,
+            )),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        Client::anthropic_compatible("key", server.uri()).with_anthropic_structured_output();
+    let result = client.extract::<Contact>("test").await.unwrap();
+
+    assert_eq!(result.value.name, "Native");
+    assert_eq!(result.value.email, Some("n@t.com".into()));
+
+    let body = sent_body(&server).await;
+    assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+    // the schema must be strict-shaped for anthropic to accept it
+    assert_eq!(
+        body["output_config"]["format"]["schema"]["additionalProperties"],
+        false
+    );
+    assert!(body.get("tools").is_none(), "tools must not be sent");
+    assert!(
+        body.get("tool_choice").is_none(),
+        "tool_choice must not be sent"
+    );
+}
+
+#[tokio::test]
+async fn tool_use_remains_the_default() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_response(
+            serde_json::json!({"name": "Tool", "email": null}),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::anthropic_compatible("key", server.uri());
+    client.extract::<Contact>("test").await.unwrap();
+
+    let body = sent_body(&server).await;
+    assert_eq!(body["tool_choice"]["name"], "extract");
+    assert_eq!(body["tools"][0]["name"], "extract");
+    assert!(
+        body.get("output_config").is_none(),
+        "output_config must be opt-in"
+    );
+}
+
+#[tokio::test]
+async fn structured_output_streams_text_deltas() {
+    let server = MockServer::start().await;
+
+    let json_content = r#"{"name":"Streamed","email":"s@t.com"}"#;
+    let mut sse = String::new();
+    let start = serde_json::json!({
+        "type": "message_start",
+        "message": { "usage": { "input_tokens": 25, "output_tokens": 0 } }
+    });
+    sse.push_str(&format!("event: message_start\ndata: {start}\n\n"));
+    for chunk in json_content.as_bytes().chunks(7) {
+        let delta = serde_json::json!({
+            "type": "content_block_delta",
+            "delta": { "type": "text_delta", "text": String::from_utf8_lossy(chunk) }
+        });
+        sse.push_str(&format!("event: content_block_delta\ndata: {delta}\n\n"));
+    }
+    let msg_delta = serde_json::json!({
+        "type": "message_delta",
+        "usage": { "input_tokens": 0, "output_tokens": 12 }
+    });
+    sse.push_str(&format!("event: message_delta\ndata: {msg_delta}\n\n"));
+
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let chunks_clone = chunks.clone();
+
+    let client =
+        Client::anthropic_compatible("key", server.uri()).with_anthropic_structured_output();
+    let result = client
+        .extract::<Contact>("test")
+        .on_stream(move |chunk| {
+            chunks_clone.lock().unwrap().push(chunk.to_string());
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Streamed");
+    assert_eq!(result.usage.output_tokens, 12);
+    let reassembled: String = chunks.lock().unwrap().iter().cloned().collect();
+    assert_eq!(reassembled, json_content);
+}
+
+#[tokio::test]
+async fn structured_output_without_text_block_errors() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(anthropic_response(serde_json::json!({"name": "Wrong"}))),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        Client::anthropic_compatible("key", server.uri()).with_anthropic_structured_output();
+    let err = client.extract::<Contact>("test").await.unwrap_err();
+
+    assert!(matches!(err, Error::Other(_)));
+}

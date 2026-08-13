@@ -25,7 +25,8 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// LLM client for structured data extraction.
 ///
-/// Supports OpenAI (via structured output), Anthropic (via tool use),
+/// Supports OpenAI (via structured output), Anthropic (via tool use, or native
+/// structured output with [`Client::with_anthropic_structured_output`]),
 /// Google Gemini (via response_schema), and any compatible API.
 #[derive(Clone)]
 pub struct Client {
@@ -58,7 +59,7 @@ impl Client {
             default_system: None,
             default_max_retries: 2,
             default_temperature: Some(0.0),
-            default_max_tokens: 4096,
+            default_max_tokens: 16384,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
@@ -76,12 +77,13 @@ impl Client {
             provider: ProviderKind::Anthropic {
                 api_key: api_key.into(),
                 base_url: "https://api.anthropic.com/v1".into(),
+                structured_output: false,
             },
             default_model: None,
             default_system: None,
             default_max_retries: 2,
             default_temperature: None,
-            default_max_tokens: 4096,
+            default_max_tokens: 16384,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
@@ -102,12 +104,13 @@ impl Client {
             provider: ProviderKind::Anthropic {
                 api_key: api_key.into(),
                 base_url: base_url.into(),
+                structured_output: false,
             },
             default_model: None,
             default_system: None,
             default_max_retries: 2,
             default_temperature: None,
-            default_max_tokens: 4096,
+            default_max_tokens: 16384,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
@@ -133,7 +136,7 @@ impl Client {
             default_system: None,
             default_max_retries: 2,
             default_temperature: Some(0.0),
-            default_max_tokens: 4096,
+            default_max_tokens: 16384,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
@@ -156,7 +159,7 @@ impl Client {
             default_system: None,
             default_max_retries: 2,
             default_temperature: None,
-            default_max_tokens: 8192,
+            default_max_tokens: 16384,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
@@ -182,7 +185,7 @@ impl Client {
             default_system: None,
             default_max_retries: 2,
             default_temperature: None,
-            default_max_tokens: 8192,
+            default_max_tokens: 16384,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
             fallbacks: Vec::new(),
@@ -235,6 +238,31 @@ impl Client {
             default_max_tokens: tokens,
             ..self
         }
+    }
+
+    /// Use Anthropic's native structured outputs (`output_config.format`)
+    /// instead of the default forced `tool_use`.
+    ///
+    /// The schema then constrains the response text directly, with no tool
+    /// round-trip. This is opt-in because it is not accepted by every Claude
+    /// generation, nor by every Anthropic-compatible proxy — forced `tool_use`
+    /// remains the portable default.
+    ///
+    /// Has no effect on OpenAI or Gemini clients, which already use each
+    /// provider's own native structured output.
+    ///
+    /// ```rust,no_run
+    /// let client = instructors::Client::anthropic("sk-ant-...")
+    ///     .with_anthropic_structured_output();
+    /// ```
+    pub fn with_anthropic_structured_output(mut self) -> Self {
+        if let ProviderKind::Anthropic {
+            structured_output, ..
+        } = &mut self.provider
+        {
+            *structured_output = true;
+        }
+        self
     }
 
     /// Enable exponential backoff for retryable HTTP errors (429, 503).
@@ -824,7 +852,7 @@ where
             // success
             #[cfg(feature = "cost-tracking")]
             {
-                usage.cost = tiktoken::pricing::estimate_cost(
+                usage.cost = crate::pricing::estimate_cost(
                     model,
                     usage.input_tokens as u64,
                     usage.output_tokens as u64,
@@ -960,13 +988,13 @@ mod tests {
     #[test]
     fn client_builder_openai() {
         let client = Client::openai("test-key")
-            .with_model("gpt-4o-mini")
+            .with_model("gpt-5.6-luna")
             .with_max_retries(5)
             .with_temperature(0.5)
             .with_max_tokens(2048)
             .with_system("custom system");
 
-        assert_eq!(client.default_model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(client.default_model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(client.default_max_retries, 5);
         assert_eq!(client.default_temperature, Some(0.5));
         assert_eq!(client.default_max_tokens, 2048);
@@ -978,7 +1006,7 @@ mod tests {
         let client = Client::anthropic("test-key");
         assert_eq!(client.default_temperature, None);
         assert_eq!(client.default_max_retries, 2);
-        assert_eq!(client.default_max_tokens, 4096);
+        assert_eq!(client.default_max_tokens, 16384);
         match &client.provider {
             ProviderKind::Anthropic { base_url, .. } => {
                 assert_eq!(base_url, "https://api.anthropic.com/v1");
@@ -1028,7 +1056,7 @@ mod tests {
 
     #[test]
     fn extract_builder_defaults() {
-        let client = Client::openai("key").with_model("gpt-4o-mini");
+        let client = Client::openai("key").with_model("gpt-5.6-luna");
 
         #[derive(serde::Deserialize, JsonSchema)]
         struct Dummy {
@@ -1037,10 +1065,10 @@ mod tests {
 
         let builder = client.extract::<Dummy>("test prompt");
         assert_eq!(builder.prompt, "test prompt");
-        assert_eq!(builder.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(builder.max_retries, 2);
         assert_eq!(builder.temperature, Some(0.0));
-        assert_eq!(builder.max_tokens, 4096);
+        assert_eq!(builder.max_tokens, 16384);
         assert!(builder.context.is_none());
         assert!(builder.validator.is_none());
     }
@@ -1056,14 +1084,14 @@ mod tests {
 
         let builder = client
             .extract::<Dummy>("prompt")
-            .model("gpt-3.5-turbo")
+            .model("gpt-5.6-terra")
             .system("be precise")
             .temperature(0.7)
             .max_tokens(1024)
             .max_retries(5)
             .context("extra info");
 
-        assert_eq!(builder.model.as_deref(), Some("gpt-3.5-turbo"));
+        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-terra"));
         assert_eq!(builder.system.as_deref(), Some("be precise"));
         assert_eq!(builder.temperature, Some(0.7));
         assert_eq!(builder.max_tokens, 1024);
@@ -1085,7 +1113,7 @@ mod tests {
     #[test]
     fn extract_many_inherits_defaults() {
         let client = Client::openai("key")
-            .with_model("gpt-4o-mini")
+            .with_model("gpt-5.6-luna")
             .with_system("custom")
             .with_temperature(0.7);
 
@@ -1095,7 +1123,7 @@ mod tests {
         }
 
         let builder = client.extract_many::<Item>("test");
-        assert_eq!(builder.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(builder.system.as_deref(), Some("custom"));
         assert_eq!(builder.temperature, Some(0.7));
     }
@@ -1236,7 +1264,7 @@ mod tests {
     fn client_builder_gemini() {
         let client = Client::gemini("test-key");
         assert_eq!(client.default_temperature, None);
-        assert_eq!(client.default_max_tokens, 8192);
+        assert_eq!(client.default_max_tokens, 16384);
         match &client.provider {
             ProviderKind::Gemini { base_url, .. } => {
                 assert_eq!(base_url, "https://generativelanguage.googleapis.com/v1beta");
