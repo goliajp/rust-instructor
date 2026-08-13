@@ -368,6 +368,10 @@ println!("cost:   ${:.6}", result.usage.cost.unwrap_or(0.0));
 println!("retries: {}", result.usage.retries);
 ```
 
+价目表里没有的模型,`cost` 为 `None`。model id 由 `tiktoken` 负责解析,所以你发给
+厂商的那个 id —— 本表用点而 API 用短横线、带发布日期后缀、Bedrock 或 Vertex 的
+平台装饰 —— 都会按对应模型计价,而不是静默地算成没有成本。
+
 通过 `default-features = false` 禁用：
 
 ```toml

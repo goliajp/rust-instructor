@@ -371,6 +371,11 @@ println!("cost:   ${:.6}", result.usage.cost.unwrap_or(0.0));
 println!("retries: {}", result.usage.retries);
 ```
 
+`cost` は価格表にないモデルでは `None` になります。モデル id の解決は `tiktoken`
+が行うため、プロバイダに送ったその id —— 表がドットのところを API はハイフン、
+リリース日サフィックス、Bedrock / Vertex の装飾 —— でも該当モデルとして計上され、
+黙ってコストが消えることはありません。
+
 `default-features = false` で無効化:
 
 ```toml
