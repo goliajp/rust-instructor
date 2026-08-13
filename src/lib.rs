@@ -22,7 +22,7 @@
 //! let client = Client::openai("sk-...");
 //! let result: ExtractResult<Contact> = client
 //!     .extract("Contact John Doe at john@example.com")
-//!     .model("gpt-4o")
+//!     .model("gpt-5.6-terra")
 //!     .await?;
 //!
 //! println!("{}: {:?}", result.value.name, result.value.email);
@@ -57,8 +57,10 @@
 //!
 //! ## Features
 //!
-//! - **Multi-provider** — OpenAI (`response_format` strict), Anthropic (`tool_use`),
-//!   Google Gemini (`response_schema`), plus any compatible API
+//! - **Multi-provider** — OpenAI (`response_format` strict), Anthropic (forced
+//!   `tool_use`, or native `output_config` via
+//!   [`Client::with_anthropic_structured_output`]), Google Gemini
+//!   (`response_schema`), plus any compatible API
 //! - **List extraction** — `extract_many::<T>()` returns `Vec<T>`
 //! - **Batch processing** — `extract_batch::<T>()` with configurable concurrency
 //! - **Multi-turn** — `.messages()` for conversation history
