@@ -1,9 +1,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::sync::{Mutex, OnceLock};
 
 // test structs of varying complexity
