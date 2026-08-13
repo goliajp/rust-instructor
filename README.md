@@ -335,6 +335,11 @@ let result: MyStruct = client
     .value;
 ```
 
+> **`temperature` is not sent to Anthropic.** The current Claude generations
+> reject a non-default `temperature` with a 400, so the Anthropic request never
+> carries it and the setting has no effect there. It is sent to the OpenAI and
+> Gemini families as usual.
+
 ## Client Defaults
 
 Set defaults once, override per-request:

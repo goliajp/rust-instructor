@@ -33,6 +33,13 @@ date.
   (`claude-sonnet-4-20250514`, `gpt-4o-2024-08-06`). Those ids all priced at
   `None` silently. Ids are now tried as sent, then progressively normalized.
 
+### Documentation
+
+- Document that `temperature` is not sent to Anthropic. The current Claude
+  generations reject a non-default `temperature` with a 400, so the Anthropic
+  request never carries it and `with_temperature` / `.temperature()` have no
+  effect there. Noted on all three setters and in the READMEs.
+
 ### Added
 
 - `Client::with_anthropic_structured_output()` — opt into Anthropic's native

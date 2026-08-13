@@ -68,6 +68,11 @@ where
     }
 
     /// Set the temperature for all extractions.
+    ///
+    /// Not sent to Anthropic. The current Claude generations reject a
+    /// non-default `temperature` with a 400, so the Anthropic request never
+    /// carries it and this setting has no effect there. Sent to the OpenAI and
+    /// Gemini families as usual.
     pub fn temperature(self, temp: f64) -> Self {
         Self {
             temperature: Some(temp),
