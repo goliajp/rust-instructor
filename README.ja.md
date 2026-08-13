@@ -334,6 +334,11 @@ let result: MyStruct = client
     .value;
 ```
 
+> **`temperature` は Anthropic には送信されません。** 現行の Claude 世代は
+> 既定値以外の `temperature` を 400 で拒否するため、Anthropic のリクエストには
+> このフィールドを含めておらず、この設定は無効です。OpenAI と Gemini
+> 系には通常どおり送信されます。
+
 ## クライアントデフォルト
 
 デフォルトを一度設定し、リクエストごとに上書き可能:

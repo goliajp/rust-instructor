@@ -332,6 +332,10 @@ let result: MyStruct = client
     .value;
 ```
 
+> **`temperature` 不会发给 Anthropic。** 当前的 Claude 世代对非默认
+> `temperature` 直接返回 400,因此 Anthropic 请求体里不带这个字段,该设置在那边
+> 不生效。OpenAI 和 Gemini 两系照常发送。
+
 ## 客户端默认值
 
 设置一次默认值，按需覆盖：

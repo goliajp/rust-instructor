@@ -217,6 +217,11 @@ impl Client {
     }
 
     /// Set the default temperature.
+    ///
+    /// Not sent to Anthropic. The current Claude generations reject a
+    /// non-default `temperature` with a 400, so the Anthropic request never
+    /// carries it and this setting has no effect there. Sent to the OpenAI and
+    /// Gemini families as usual.
     pub fn with_temperature(self, temp: f64) -> Self {
         Self {
             default_temperature: Some(temp),
@@ -452,6 +457,11 @@ where
     }
 
     /// Set the temperature (0.0 = deterministic, 1.0 = creative).
+    ///
+    /// Not sent to Anthropic. The current Claude generations reject a
+    /// non-default `temperature` with a 400, so the Anthropic request never
+    /// carries it and this setting has no effect there. Sent to the OpenAI and
+    /// Gemini families as usual.
     pub fn temperature(self, temp: f64) -> Self {
         Self {
             temperature: Some(temp),
