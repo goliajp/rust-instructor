@@ -53,13 +53,12 @@ async fn retry_429_with_backoff() {
         .mount(&server)
         .await;
 
-    let client =
-        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-            base_delay: std::time::Duration::from_millis(10),
-            max_http_retries: 3,
-            jitter: false,
-            ..Default::default()
-        });
+    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
+        base_delay: std::time::Duration::from_millis(10),
+        max_http_retries: 3,
+        jitter: false,
+        ..Default::default()
+    });
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "John");
@@ -87,13 +86,12 @@ async fn retry_503_with_backoff() {
         .mount(&server)
         .await;
 
-    let client =
-        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-            base_delay: std::time::Duration::from_millis(10),
-            max_http_retries: 3,
-            jitter: false,
-            ..Default::default()
-        });
+    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
+        base_delay: std::time::Duration::from_millis(10),
+        max_http_retries: 3,
+        jitter: false,
+        ..Default::default()
+    });
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Jane");
@@ -110,13 +108,12 @@ async fn no_retry_400() {
         .mount(&server)
         .await;
 
-    let client =
-        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-            base_delay: std::time::Duration::from_millis(10),
-            max_http_retries: 3,
-            jitter: false,
-            ..Default::default()
-        });
+    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
+        base_delay: std::time::Duration::from_millis(10),
+        max_http_retries: 3,
+        jitter: false,
+        ..Default::default()
+    });
 
     let err = client.extract::<Contact>("test").await.unwrap_err();
     match err {
@@ -136,13 +133,12 @@ async fn no_retry_401() {
         .mount(&server)
         .await;
 
-    let client =
-        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-            base_delay: std::time::Duration::from_millis(10),
-            max_http_retries: 3,
-            jitter: false,
-            ..Default::default()
-        });
+    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
+        base_delay: std::time::Duration::from_millis(10),
+        max_http_retries: 3,
+        jitter: false,
+        ..Default::default()
+    });
 
     let err = client.extract::<Contact>("test").await.unwrap_err();
     match err {
@@ -220,13 +216,12 @@ async fn backoff_with_parse_retry() {
         .mount(&server)
         .await;
 
-    let client =
-        Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-            base_delay: std::time::Duration::from_millis(10),
-            max_http_retries: 2,
-            jitter: false,
-            ..Default::default()
-        });
+    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
+        base_delay: std::time::Duration::from_millis(10),
+        max_http_retries: 2,
+        jitter: false,
+        ..Default::default()
+    });
 
     let result = client
         .extract::<Contact>("test")
