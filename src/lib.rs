@@ -79,8 +79,6 @@ mod backoff;
 mod batch;
 mod client;
 mod error;
-#[cfg(feature = "cost-tracking")]
-mod pricing;
 mod provider;
 mod schema;
 mod usage;

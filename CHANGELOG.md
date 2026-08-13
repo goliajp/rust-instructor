@@ -31,7 +31,14 @@ date.
   and the table spells a generation with a dot (`claude-haiku-4.5`) while the
   APIs use a dash (`claude-haiku-4-5`) and historically appended a release date
   (`claude-sonnet-4-20250514`, `gpt-4o-2024-08-06`). Those ids all priced at
-  `None` silently. Ids are now tried as sent, then progressively normalized.
+  `None` silently.
+
+  The fix lives upstream in `tiktoken` 4.1, whose `estimate_cost` resolves
+  those spellings (and Bedrock / Vertex decoration) itself — normalization is
+  the price table's own contract, not something each consumer should reimplement.
+  This crate carries none of its own; `tests/cost_tracking.rs` is the contract
+  that keeps upstream honest about the spellings this crate depends on.
+  Requires `tiktoken >= 4.1.1`.
 
 ### Documentation
 
