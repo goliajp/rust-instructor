@@ -16,7 +16,7 @@ struct Contact {
 #[tokio::main]
 async fn main() -> instructors::Result<()> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-    let client = Client::openai(&api_key).with_model("gpt-4o-mini");
+    let client = Client::openai(&api_key).with_model("gpt-5.6-luna");
 
     let result = client
         .extract::<Contact>("John Doe, john@example.com")

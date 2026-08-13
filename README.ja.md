@@ -60,11 +60,37 @@ instructors = "1"
 | プロバイダー | コンストラクタ | メカニズム |
 |---|---|---|
 | OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
-| Anthropic | `Client::anthropic(key)` | `tool_use` による強制ツール選択 |
+| Anthropic | `Client::anthropic(key)` | 強制 `tool_use`、またはネイティブ `output_config`（オプトイン） |
 | Google Gemini | `Client::gemini(key)` | `response_schema` 構造化 JSON |
 | OpenAI 互換 | `Client::openai_compatible(key, url)` | OpenAI と同一方式 (DeepSeek、Together 等) |
 | Anthropic 互換 | `Client::anthropic_compatible(key, url)` | Anthropic と同一方式 |
 | Gemini 互換 | `Client::gemini_compatible(key, url)` | Gemini と同一方式 |
+
+### デフォルトモデル
+
+モデル未指定時は、各プロバイダーの現行バランス層を使用します:
+
+| プロバイダー | デフォルト |
+|---|---|
+| OpenAI | `gpt-5.6-terra` |
+| Anthropic | `claude-sonnet-5` |
+| Gemini | `gemini-3.6-flash` |
+
+モデル世代はおよそ半年ごとに入れ替わり、退役した id は解決しなくなるため、これらの
+デフォルトはマイナーリリースごとに移動します。特定のモデルを固定する場合は
+`.with_model("...")` を使用してください。
+
+### Anthropic ネイティブ構造化出力
+
+Anthropic の抽出は既定で強制 `tool_use` を使用します（すべての Claude 世代と
+Anthropic 互換プロキシが受け付けます）。対応世代では `output_config.format` により
+ツール往復なしでレスポンステキストを直接制約できます:
+
+```rust
+let client = Client::anthropic("sk-ant-...")
+    .with_anthropic_structured_output();
+```
+
 
 ```rust
 // OpenAI
@@ -110,7 +136,7 @@ use instructors::ImageInput;
 // URL から
 let result = client.extract::<Description>("この画像を説明してください")
     .image(ImageInput::Url("https://example.com/photo.jpg".into()))
-    .model("gpt-4o")
+    .model("gpt-5.6-terra")
     .await?;
 
 // base64 から
@@ -262,7 +288,7 @@ struct Author {
     affiliation: Option<String>,
 }
 
-let paper: Paper = client.extract(&pdf_text).model("gpt-4o").await?.value;
+let paper: Paper = client.extract(&pdf_text).model("gpt-5.6-terra").await?.value;
 ```
 
 ## リトライとタイムアウト
@@ -296,7 +322,7 @@ let result = client.extract::<Contact>("...")
 ```rust
 let result: MyStruct = client
     .extract("input text")
-    .model("gpt-4o-mini")            // モデルを上書き
+    .model("gpt-5.6-luna")            // モデルを上書き
     .system("You are an expert...")   // カスタムシステムプロンプト
     .temperature(0.0)                 // 決定的な出力
     .max_tokens(2048)                 // 出力トークン数の上限
@@ -308,13 +334,18 @@ let result: MyStruct = client
     .value;
 ```
 
+> **`temperature` は Anthropic には送信されません。** 現行の Claude 世代は
+> 既定値以外の `temperature` を 400 で拒否するため、Anthropic のリクエストには
+> このフィールドを含めておらず、この設定は無効です。OpenAI と Gemini
+> 系には通常どおり送信されます。
+
 ## クライアントデフォルト
 
 デフォルトを一度設定し、リクエストごとに上書き可能:
 
 ```rust
 let client = Client::openai("sk-...")
-    .with_model("gpt-4o-mini")
+    .with_model("gpt-5.6-luna")
     .with_temperature(0.0)
     .with_max_retries(3)
     .with_system("Extract data precisely.");
@@ -324,7 +355,7 @@ let a: TypeA = client.extract("...").await?.value;
 let b: TypeB = client.extract("...").await?.value;
 
 // 特定のリクエストでのみ上書き
-let c: TypeC = client.extract("...").model("gpt-4o").await?.value;
+let c: TypeC = client.extract("...").model("gpt-5.6-terra").await?.value;
 ```
 
 ## コスト追跡

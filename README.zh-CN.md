@@ -60,11 +60,35 @@ instructors = "1"
 | 提供商 | 构造方法 | 机制 |
 |---|---|---|
 | OpenAI | `Client::openai(key)` | `response_format` 严格 JSON Schema |
-| Anthropic | `Client::anthropic(key)` | `tool_use` 强制工具调用 |
+| Anthropic | `Client::anthropic(key)` | 强制 `tool_use`,或原生 `output_config`(可选) |
 | OpenAI 兼容 | `Client::openai_compatible(key, url)` | 与 OpenAI 相同（DeepSeek、Together 等） |
 | Anthropic 兼容 | `Client::anthropic_compatible(key, url)` | 与 Anthropic 相同 |
 | Google Gemini | `Client::gemini(key)` | `response_schema` 结构化 JSON |
 | Gemini 兼容 | `Client::gemini_compatible(key, url)` | 与 Gemini 相同 |
+
+### 默认模型
+
+未指定模型时,各家使用当前的均衡档:
+
+| 提供商 | 默认模型 |
+|---|---|
+| OpenAI | `gpt-5.6-terra` |
+| Anthropic | `claude-sonnet-5` |
+| Gemini | `gemini-3.6-flash` |
+
+模型世代大约每半年更替一次,退役的 id 会直接失效,所以这些默认值会随每个 minor
+版本移动。需要锁定某个具体模型时用 `.with_model("...")`。
+
+### Anthropic 原生结构化输出
+
+Anthropic 抽取默认走强制 `tool_use`,所有 Claude 世代和所有 Anthropic 兼容代理都
+认。在支持的世代上,`output_config.format` 可以直接约束响应文本,省掉工具往返:
+
+```rust
+let client = Client::anthropic("sk-ant-...")
+    .with_anthropic_structured_output();
+```
+
 
 ```rust
 // OpenAI
@@ -110,7 +134,7 @@ use instructors::ImageInput;
 // 通过 URL
 let result = client.extract::<Description>("描述这张图片")
     .image(ImageInput::Url("https://example.com/photo.jpg".into()))
-    .model("gpt-4o")
+    .model("gpt-5.6-terra")
     .await?;
 
 // 通过 base64
@@ -262,7 +286,7 @@ struct Author {
     affiliation: Option<String>,
 }
 
-let paper: Paper = client.extract(&pdf_text).model("gpt-4o").await?.value;
+let paper: Paper = client.extract(&pdf_text).model("gpt-5.6-terra").await?.value;
 ```
 
 ## 重试与超时
@@ -296,7 +320,7 @@ let result = client.extract::<Contact>("...")
 ```rust
 let result: MyStruct = client
     .extract("input text")
-    .model("gpt-4o-mini")            // 覆盖模型
+    .model("gpt-5.6-luna")            // 覆盖模型
     .system("You are an expert...")   // 自定义系统提示
     .temperature(0.0)                 // 确定性输出
     .max_tokens(2048)                 // 限制输出 token 数
@@ -308,13 +332,17 @@ let result: MyStruct = client
     .value;
 ```
 
+> **`temperature` 不会发给 Anthropic。** 当前的 Claude 世代对非默认
+> `temperature` 直接返回 400,因此 Anthropic 请求体里不带这个字段,该设置在那边
+> 不生效。OpenAI 和 Gemini 两系照常发送。
+
 ## 客户端默认值
 
 设置一次默认值，按需覆盖：
 
 ```rust
 let client = Client::openai("sk-...")
-    .with_model("gpt-4o-mini")
+    .with_model("gpt-5.6-luna")
     .with_temperature(0.0)
     .with_max_retries(3)
     .with_system("Extract data precisely.");
@@ -324,7 +352,7 @@ let a: TypeA = client.extract("...").await?.value;
 let b: TypeB = client.extract("...").await?.value;
 
 // 针对特定请求覆盖默认值
-let c: TypeC = client.extract("...").model("gpt-4o").await?.value;
+let c: TypeC = client.extract("...").model("gpt-5.6-terra").await?.value;
 ```
 
 ## 费用追踪

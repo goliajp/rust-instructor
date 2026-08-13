@@ -32,7 +32,7 @@ impl Validate for UserProfile {
 #[tokio::main]
 async fn main() -> instructors::Result<()> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-    let client = Client::openai(&api_key).with_model("gpt-4o-mini");
+    let client = Client::openai(&api_key).with_model("gpt-5.6-luna");
 
     // trait-based validation (auto-retries on failure)
     let user = client

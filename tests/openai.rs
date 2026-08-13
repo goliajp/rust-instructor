@@ -367,7 +367,7 @@ async fn custom_model() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .model("gpt-4o-mini")
+        .model("gpt-5.6-luna")
         .await
         .unwrap();
 
@@ -513,7 +513,7 @@ async fn client_with_defaults() {
         .await;
 
     let client = Client::openai_compatible("key", server.uri())
-        .with_model("gpt-4o-mini")
+        .with_model("gpt-5.6-luna")
         .with_system("extract data")
         .with_temperature(0.5)
         .with_max_retries(0)
