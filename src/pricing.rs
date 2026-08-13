@@ -171,6 +171,25 @@ mod tests {
         }
     }
 
+    // The safety property that makes a normalizing lookup trustworthy: every
+    // table id must still resolve to itself, and no id may normalize onto a
+    // *different* table entry. Without this, normalization could silently
+    // price one model at another's rate.
+    #[test]
+    fn normalization_never_maps_one_model_onto_another() {
+        for model in tiktoken::pricing::all_models() {
+            let resolved = candidates(model.id)
+                .into_iter()
+                .find_map(|id| tiktoken::pricing::get_model(&id))
+                .unwrap_or_else(|| panic!("{} no longer resolves", model.id));
+            assert_eq!(
+                resolved.id, model.id,
+                "{} normalized onto {}",
+                model.id, resolved.id
+            );
+        }
+    }
+
     #[test]
     fn normalization_does_not_invent_prices() {
         assert!(estimate_cost("totally-made-up-9-9", 1_000, 1_000).is_none());
