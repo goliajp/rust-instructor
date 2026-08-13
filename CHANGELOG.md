@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.1] - 2026-08-13
+
+Documentation only. No code changes.
+
+### Fixed
+
+- The cost-tracking section never said what `cost` being `None` means, nor
+  that model ids are resolved rather than matched exactly. 1.4.0 made that the
+  whole point of the change — a caller who passes the id they just sent to the
+  provider gets a cost — and the README shipped without mentioning it. Noted in
+  all three languages.
+
 ## [1.4.0] - 2026-08-13
 
 Ecosystem catch-up. The provider defaults had fallen one to two model
