@@ -67,6 +67,17 @@ pub(crate) fn clean_for_anthropic(schema: &Schema) -> Value {
     schema_value
 }
 
+/// Prepare the schema for Anthropic native structured outputs
+/// (`output_config.format`), which requires `additionalProperties: false` on
+/// every object and every property listed in `required`.
+pub(crate) fn clean_for_anthropic_structured(schema: &Schema) -> Value {
+    let mut schema_value = from_schema(schema);
+    remove_key_recursive(&mut schema_value, "title");
+    add_additional_properties_false(&mut schema_value);
+    make_all_properties_required(&mut schema_value);
+    schema_value
+}
+
 /// Clean up the schema for Gemini `response_schema`.
 ///
 /// Removes `title`, `format`, and `additionalProperties`, and converts

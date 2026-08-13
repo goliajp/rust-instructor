@@ -12,10 +12,28 @@ struct Request {
     messages: Vec<AntMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Tool>,
-    tool_choice: ToolChoice,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+}
+
+/// Anthropic native structured outputs — the schema constrains the response
+/// text directly, no tool round-trip.
+#[derive(Serialize)]
+struct OutputConfig {
+    format: OutputFormat,
+}
+
+#[derive(Serialize)]
+struct OutputFormat {
+    #[serde(rename = "type")]
+    format_type: String,
+    schema: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -76,6 +94,8 @@ struct ContentBlock {
     block_type: String,
     #[serde(default)]
     input: Option<serde_json::Value>,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +124,8 @@ struct StreamDelta {
     delta_type: Option<String>,
     #[serde(default)]
     partial_json: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +167,7 @@ pub(crate) async fn send_anthropic(
     messages: &[Message],
     schema: &Schema,
     max_tokens: u32,
+    structured_output: bool,
     on_stream: StreamCallback<'_>,
 ) -> Result<RawResponse> {
     let streaming = on_stream.is_some();
@@ -158,22 +181,36 @@ pub(crate) async fn send_anthropic(
         .collect();
 
     let sys_text = system.unwrap_or("Extract the requested information from the given text.");
-    let input_schema = schema::clean_for_anthropic(schema);
+
+    let (tools, tool_choice, output_config) = if structured_output {
+        let config = OutputConfig {
+            format: OutputFormat {
+                format_type: "json_schema".into(),
+                schema: schema::clean_for_anthropic_structured(schema),
+            },
+        };
+        (Vec::new(), None, Some(config))
+    } else {
+        let tool = Tool {
+            name: "extract".into(),
+            description: "Extract structured data from the input".into(),
+            input_schema: schema::clean_for_anthropic(schema),
+        };
+        let choice = ToolChoice {
+            choice_type: "tool".into(),
+            name: "extract".into(),
+        };
+        (vec![tool], Some(choice), None)
+    };
 
     let body = Request {
         model: model.into(),
         max_tokens,
         messages: ant_messages,
         system: Some(sys_text.into()),
-        tools: vec![Tool {
-            name: "extract".into(),
-            description: "Extract structured data from the input".into(),
-            input_schema,
-        }],
-        tool_choice: ToolChoice {
-            choice_type: "tool".into(),
-            name: "extract".into(),
-        },
+        tools,
+        tool_choice,
+        output_config,
         stream: streaming,
     };
 
@@ -196,27 +233,37 @@ pub(crate) async fn send_anthropic(
     }
 
     if streaming {
-        read_stream(resp, on_stream.unwrap()).await
+        read_stream(resp, structured_output, on_stream.unwrap()).await
     } else {
-        read_response(resp).await
+        read_response(resp, structured_output).await
     }
 }
 
-async fn read_response(resp: reqwest::Response) -> Result<RawResponse> {
+async fn read_response(resp: reqwest::Response, structured_output: bool) -> Result<RawResponse> {
     let data: Response = resp.json().await?;
     let usage = data.usage.unwrap_or(UsageInfo {
         input_tokens: 0,
         output_tokens: 0,
     });
 
-    let tool_block = data
-        .content
-        .into_iter()
-        .find(|b| b.block_type == "tool_use")
-        .ok_or_else(|| Error::Other("no tool_use block in response".into()))?;
-
-    let input = tool_block.input.unwrap_or(serde_json::Value::Null);
-    let content = serde_json::to_string(&input)?;
+    // native structured output puts the payload in a `text` block, forced tool
+    // use in `tool_use.input`. Only the block the request asked for counts — a
+    // `text` block in tool-use mode is the model answering in prose instead of
+    // calling the tool, which is a hard failure, not a payload.
+    let content = if structured_output {
+        data.content
+            .into_iter()
+            .find(|b| b.block_type == "text")
+            .and_then(|b| b.text)
+            .ok_or_else(|| Error::Other("no text block in response".into()))?
+    } else {
+        let tool_block = data
+            .content
+            .into_iter()
+            .find(|b| b.block_type == "tool_use")
+            .ok_or_else(|| Error::Other("no tool_use block in response".into()))?;
+        serde_json::to_string(&tool_block.input.unwrap_or(serde_json::Value::Null))?
+    };
 
     Ok(RawResponse {
         content,
@@ -227,6 +274,7 @@ async fn read_response(resp: reqwest::Response) -> Result<RawResponse> {
 
 async fn read_stream(
     resp: reqwest::Response,
+    structured_output: bool,
     callback: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<RawResponse> {
     use futures::StreamExt;
@@ -261,10 +309,16 @@ async fn read_stream(
                             input_tokens = usage.input_tokens;
                         }
                     }
+                    // native structured output streams the payload as
+                    // `text_delta`, forced tool use as `input_json_delta`
                     "content_block_delta" => {
                         if let Some(delta) = event.delta
-                            && delta.delta_type.as_deref() == Some("input_json_delta")
-                            && let Some(partial) = delta.partial_json
+                            && let Some(partial) =
+                                match (structured_output, delta.delta_type.as_deref()) {
+                                    (true, Some("text_delta")) => delta.text,
+                                    (false, Some("input_json_delta")) => delta.partial_json,
+                                    _ => None,
+                                }
                         {
                             callback(&partial);
                             accumulated.push_str(&partial);

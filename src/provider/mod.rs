@@ -19,9 +19,22 @@ pub(crate) struct RawResponse {
 
 #[derive(Clone)]
 pub(crate) enum ProviderKind {
-    OpenAi { api_key: String, base_url: String },
-    Anthropic { api_key: String, base_url: String },
-    Gemini { api_key: String, base_url: String },
+    OpenAi {
+        api_key: String,
+        base_url: String,
+    },
+    Anthropic {
+        api_key: String,
+        base_url: String,
+        /// Send the schema as `output_config.format` instead of a forced
+        /// `tool_use`. Opt-in: not every Claude generation — nor every
+        /// Anthropic-compatible proxy — accepts it.
+        structured_output: bool,
+    },
+    Gemini {
+        api_key: String,
+        base_url: String,
+    },
 }
 
 /// Image input for vision-capable models.
@@ -71,11 +84,17 @@ impl Message {
 }
 
 impl ProviderKind {
+    /// The model used when the caller sets none.
+    ///
+    /// Each is its provider's current balanced tier. Model generations turn
+    /// over roughly twice a year and retired ids stop resolving, so these are
+    /// expected to move with every minor release — pin `.with_model()` if you
+    /// need one specific model across upgrades.
     pub(crate) fn default_model(&self) -> &str {
         match self {
-            Self::OpenAi { .. } => "gpt-4o",
-            Self::Anthropic { .. } => "claude-sonnet-4-20250514",
-            Self::Gemini { .. } => "gemini-2.5-flash",
+            Self::OpenAi { .. } => "gpt-5.6-terra",
+            Self::Anthropic { .. } => "claude-sonnet-5",
+            Self::Gemini { .. } => "gemini-3.6-flash",
         }
     }
 
@@ -118,9 +137,22 @@ impl ProviderKind {
                 )
                 .await
             }
-            Self::Anthropic { api_key, base_url } => {
+            Self::Anthropic {
+                api_key,
+                base_url,
+                structured_output,
+            } => {
                 send_anthropic(
-                    http, base_url, api_key, model, system, messages, schema, max_tokens, on_stream,
+                    http,
+                    base_url,
+                    api_key,
+                    model,
+                    system,
+                    messages,
+                    schema,
+                    max_tokens,
+                    *structured_output,
+                    on_stream,
                 )
                 .await
             }
@@ -210,7 +242,7 @@ mod tests {
             api_key: "key".into(),
             base_url: "url".into(),
         };
-        assert_eq!(provider.default_model(), "gpt-4o");
+        assert_eq!(provider.default_model(), "gpt-5.6-terra");
     }
 
     #[test]
@@ -218,8 +250,9 @@ mod tests {
         let provider = ProviderKind::Anthropic {
             api_key: "key".into(),
             base_url: "url".into(),
+            structured_output: false,
         };
-        assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
+        assert_eq!(provider.default_model(), "claude-sonnet-5");
     }
 
     #[test]
@@ -228,7 +261,7 @@ mod tests {
             api_key: "key".into(),
             base_url: "url".into(),
         };
-        assert_eq!(provider.default_model(), "gemini-2.5-flash");
+        assert_eq!(provider.default_model(), "gemini-3.6-flash");
     }
 
     #[test]
@@ -242,6 +275,7 @@ mod tests {
         let anthropic = ProviderKind::Anthropic {
             api_key: "k".into(),
             base_url: "u".into(),
+            structured_output: false,
         };
         assert_eq!(anthropic.kind_name(), "anthropic");
 

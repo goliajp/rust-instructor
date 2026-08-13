@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.4.0] - 2026-08-13
+
+Ecosystem catch-up. The provider defaults had fallen one to two model
+generations behind, and the Anthropic default was past its published retirement
+date.
+
+### Changed
+
+- **Default models moved to each provider's current balanced tier.** OpenAI
+  `gpt-4o` → `gpt-5.6-terra`, Anthropic `claude-sonnet-4-20250514` →
+  `claude-sonnet-5`, Gemini `gemini-2.5-flash` → `gemini-3.6-flash`. The old
+  Anthropic default was deprecated with a published retirement date of
+  2026-06-15, so `Client::anthropic(key)` with no `.with_model()` was calling a
+  retired id. Pin `.with_model("...")` if you need a specific model to survive
+  upgrades.
+- **`tiktoken` 3 → 4, with `default-features = false`.** Only
+  `tiktoken::pricing` is used, never the tokenizer, so skipping the default
+  `vocabs-all` feature keeps roughly 5 MB of vocabulary data out of the binary.
+  The price table also gains the current OpenAI, Anthropic, and Gemini
+  generations.
+- **Default `max_tokens` 4096 (8192 for Gemini) → 16384.** On the current
+  Claude and Gemini generations thinking tokens count against the same budget
+  as the response, so the old ceiling truncated mid-answer.
+
+### Fixed
+
+- **Cost tracking no longer reports `None` for most real model ids.** Model ids
+  were passed to the price table verbatim, but that lookup is an exact match
+  and the table spells a generation with a dot (`claude-haiku-4.5`) while the
+  APIs use a dash (`claude-haiku-4-5`) and historically appended a release date
+  (`claude-sonnet-4-20250514`, `gpt-4o-2024-08-06`). Those ids all priced at
+  `None` silently. Ids are now tried as sent, then progressively normalized.
+
+### Added
+
+- `Client::with_anthropic_structured_output()` — opt into Anthropic's native
+  structured outputs (`output_config.format`) instead of the default forced
+  `tool_use`. Opt-in because not every Claude generation, nor every
+  Anthropic-compatible proxy, accepts it. Covers both the buffered and
+  streaming paths.
+
 ## [1.3.4] - 2026-06-07
 
 ### Changed
