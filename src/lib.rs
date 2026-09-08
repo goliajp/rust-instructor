@@ -61,6 +61,7 @@
 //!   `tool_use`, or native `output_config` via
 //!   [`Client::with_anthropic_structured_output`]), Google Gemini
 //!   (`response_schema`), plus any compatible API
+//! - **Thinking control** — Gemini reasoning depth via [`Client::with_gemini_thinking`]
 //! - **List extraction** — `extract_many::<T>()` returns `Vec<T>`
 //! - **Batch processing** — `extract_batch::<T>()` with configurable concurrency
 //! - **Multi-turn** — `.messages()` for conversation history
@@ -88,7 +89,7 @@ pub use backoff::BackoffConfig;
 pub use batch::BatchBuilder;
 pub use client::{Client, ExtractBuilder, ExtractResult};
 pub use error::{Error, Result};
-pub use provider::{ImageInput, Message};
+pub use provider::{GeminiThinking, ImageInput, Message, ThinkingLevel};
 pub use usage::Usage;
 pub use validate::{Validate, ValidationError};
 
@@ -103,8 +104,8 @@ pub use serde;
 /// ```
 pub mod prelude {
     pub use crate::{
-        BackoffConfig, BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate,
-        ValidationError,
+        BackoffConfig, BatchBuilder, Client, ExtractResult, GeminiThinking, ImageInput, Message,
+        ThinkingLevel, Usage, Validate, ValidationError,
     };
     pub use schemars::JsonSchema;
     pub use serde::Deserialize;

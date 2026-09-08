@@ -58,6 +58,37 @@ struct GenerationConfig {
     max_output_tokens: Option<u32>,
     response_mime_type: String,
     response_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<GeminiThinking>,
+}
+
+/// How Gemini decides how long to reason before answering.
+///
+/// Gemini exposes two parameters for this, one per generation, and they are
+/// mutually exclusive: a request carrying both is rejected with a 400.
+///
+/// Set it with [`Client::with_gemini_thinking`].
+///
+/// [`Client::with_gemini_thinking`]: crate::Client::with_gemini_thinking
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeminiThinking {
+    /// `thinkingLevel` — the Gemini 3 parameter.
+    #[serde(rename = "thinkingLevel")]
+    Level(ThinkingLevel),
+    /// `thinkingBudget` — the legacy Gemini 2.5 parameter, a ceiling in
+    /// thinking tokens.
+    #[serde(rename = "thinkingBudget")]
+    Budget(i32),
+}
+
+/// How much Gemini may reason before answering.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
 }
 
 #[derive(Deserialize)]
@@ -82,13 +113,25 @@ struct ResponsePart {
     text: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct UsageMetadata {
     #[serde(default)]
     prompt_token_count: u32,
     #[serde(default)]
     candidates_token_count: u32,
+    /// Tokens the model spent thinking. Reported separately from
+    /// `candidatesTokenCount` but billed as output, so
+    /// [`UsageMetadata::output_tokens`] adds the two together — otherwise
+    /// raising the thinking level would silently deflate the cost estimate.
+    #[serde(default)]
+    thoughts_token_count: u32,
+}
+
+impl UsageMetadata {
+    fn output_tokens(&self) -> u32 {
+        self.candidates_token_count + self.thoughts_token_count
+    }
 }
 
 fn build_parts(msg: &Message) -> Vec<GemPart> {
@@ -139,6 +182,7 @@ pub(crate) async fn send_gemini(
     schema: &Schema,
     temperature: Option<f64>,
     max_tokens: u32,
+    thinking: Option<GeminiThinking>,
     on_stream: StreamCallback<'_>,
 ) -> Result<RawResponse> {
     let streaming = on_stream.is_some();
@@ -169,6 +213,7 @@ pub(crate) async fn send_gemini(
             max_output_tokens: Some(max_tokens),
             response_mime_type: "application/json".into(),
             response_schema,
+            thinking_config: thinking,
         },
     };
 
@@ -209,10 +254,7 @@ pub(crate) async fn send_gemini(
 
 async fn read_response(resp: reqwest::Response) -> Result<RawResponse> {
     let data: Response = resp.json().await?;
-    let usage = data.usage_metadata.unwrap_or(UsageMetadata {
-        prompt_token_count: 0,
-        candidates_token_count: 0,
-    });
+    let usage = data.usage_metadata.unwrap_or_default();
 
     let text = data
         .candidates
@@ -226,7 +268,7 @@ async fn read_response(resp: reqwest::Response) -> Result<RawResponse> {
     Ok(RawResponse {
         content: text,
         input_tokens: usage.prompt_token_count,
-        output_tokens: usage.candidates_token_count,
+        output_tokens: usage.output_tokens(),
     })
 }
 
@@ -259,7 +301,7 @@ async fn read_stream(
             {
                 if let Some(usage) = event.usage_metadata {
                     input_tokens = usage.prompt_token_count;
-                    output_tokens = usage.candidates_token_count;
+                    output_tokens = usage.output_tokens();
                 }
 
                 if let Some(text) = event

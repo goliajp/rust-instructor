@@ -1,4 +1,4 @@
-use instructors::{Client, Error, ImageInput};
+use instructors::{Client, Error, GeminiThinking, ImageInput, ThinkingLevel};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use wiremock::matchers::{method, query_param};
@@ -228,4 +228,291 @@ async fn gemini_auth_in_query_param() {
     let client = Client::gemini_compatible("secret-api-key", server.uri());
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Auth");
+}
+
+async fn sent_body(server: &MockServer) -> serde_json::Value {
+    let requests = server.received_requests().await.unwrap();
+    serde_json::from_slice(&requests[0].body).unwrap()
+}
+
+#[tokio::test]
+async fn thinking_level_sent_in_generation_config() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(gemini_response(r#"{"name": "Thought", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::gemini_compatible("key", server.uri())
+        .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::High));
+    let result = client.extract::<Contact>("test").await.unwrap();
+
+    assert_eq!(result.value.name, "Thought");
+
+    let config = &sent_body(&server).await["generationConfig"]["thinkingConfig"];
+    assert_eq!(config["thinkingLevel"], "high");
+    // the two parameters are mutually exclusive — a request carrying both is a
+    // 400, so only ever one key may reach the wire
+    assert!(
+        config.get("thinkingBudget").is_none(),
+        "thinkingBudget must not accompany thinkingLevel, got: {config}"
+    );
+}
+
+#[tokio::test]
+async fn thinking_budget_sent_in_generation_config() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(gemini_response(r#"{"name": "Budgeted", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::gemini_compatible("key", server.uri())
+        .with_model("gemini-2.5-flash")
+        .with_gemini_thinking(GeminiThinking::Budget(1024));
+    let result = client.extract::<Contact>("test").await.unwrap();
+
+    assert_eq!(result.value.name, "Budgeted");
+
+    let config = &sent_body(&server).await["generationConfig"]["thinkingConfig"];
+    assert_eq!(config["thinkingBudget"], 1024);
+    assert!(
+        config.get("thinkingLevel").is_none(),
+        "thinkingLevel must not accompany thinkingBudget, got: {config}"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_thinking_budget_sent_as_negative_one() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(gemini_response(r#"{"name": "Dynamic", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::gemini_compatible("key", server.uri())
+        .with_gemini_thinking(GeminiThinking::Budget(-1));
+    client.extract::<Contact>("test").await.unwrap();
+
+    // -1 asks the model to size the budget itself; it must survive as a
+    // signed number rather than being clamped or dropped
+    let body = sent_body(&server).await;
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+        -1
+    );
+}
+
+#[tokio::test]
+async fn last_thinking_setting_wins() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(gemini_response(r#"{"name": "Last", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // one slot, so a second call replaces the first rather than adding a
+    // second key
+    let client = Client::gemini_compatible("key", server.uri())
+        .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::High))
+        .with_gemini_thinking(GeminiThinking::Budget(512));
+    client.extract::<Contact>("test").await.unwrap();
+
+    let config = &sent_body(&server).await["generationConfig"]["thinkingConfig"];
+    assert_eq!(config["thinkingBudget"], 512);
+    assert!(config.get("thinkingLevel").is_none());
+    assert_eq!(
+        config.as_object().unwrap().len(),
+        1,
+        "thinkingConfig must carry exactly one key, got: {config}"
+    );
+}
+
+#[tokio::test]
+async fn thinking_level_serializes_lowercase() {
+    for (level, expected) in [
+        (ThinkingLevel::Minimal, "minimal"),
+        (ThinkingLevel::Low, "low"),
+        (ThinkingLevel::Medium, "medium"),
+        (ThinkingLevel::High, "high"),
+    ] {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(query_param("key", "key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(gemini_response(r#"{"name": "L", "email": null}"#)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Client::gemini_compatible("key", server.uri())
+            .with_gemini_thinking(GeminiThinking::Level(level));
+        client.extract::<Contact>("test").await.unwrap();
+
+        let body = sent_body(&server).await;
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"], expected,
+            "{level:?} must serialize as {expected}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn no_thinking_config_when_unset() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(gemini_response(r#"{"name": "Default", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::gemini_compatible("key", server.uri());
+    client.extract::<Contact>("test").await.unwrap();
+
+    let body = sent_body(&server).await;
+    assert!(
+        body["generationConfig"].get("thinkingConfig").is_none(),
+        "thinkingConfig must be absent, got: {}",
+        body["generationConfig"]
+    );
+}
+
+#[tokio::test]
+async fn thinking_level_survives_client_clone() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(gemini_response(r#"{"name": "Cloned", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::gemini_compatible("key", server.uri())
+        .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::Low))
+        .with_max_retries(0);
+    let cloned = client.clone();
+    cloned.extract::<Contact>("test").await.unwrap();
+
+    let body = sent_body(&server).await;
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        "low"
+    );
+}
+
+#[tokio::test]
+async fn thoughts_tokens_counted_as_output() {
+    let server = MockServer::start().await;
+
+    let with_thoughts = serde_json::json!({
+        "candidates": [{
+            "content": {
+                "parts": [{ "text": r#"{"name": "Deep", "email": null}"# }],
+                "role": "model"
+            },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 40,
+            "candidatesTokenCount": 15,
+            "thoughtsTokenCount": 900,
+            "totalTokenCount": 955
+        }
+    });
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(with_thoughts))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::gemini_compatible("key", server.uri())
+        .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::High));
+    let result = client.extract::<Contact>("test").await.unwrap();
+
+    // thoughts are billed as output tokens, so they must not fall out of the
+    // count — otherwise raising the thinking level deflates the cost estimate
+    assert_eq!(result.usage.input_tokens, 40);
+    assert_eq!(result.usage.output_tokens, 915);
+    assert_eq!(result.usage.total_tokens, 955);
+}
+
+#[tokio::test]
+async fn thoughts_tokens_counted_while_streaming() {
+    let server = MockServer::start().await;
+
+    let chunk = serde_json::json!({
+        "candidates": [{
+            "content": {
+                "parts": [{ "text": r#"{"name": "Streamed", "email": null}"# }],
+                "role": "model"
+            }
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 40,
+            "candidatesTokenCount": 15,
+            "thoughtsTokenCount": 100,
+            "totalTokenCount": 155
+        }
+    });
+
+    Mock::given(method("POST"))
+        .and(query_param("key", "key"))
+        .and(query_param("alt", "sse"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\n")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::gemini_compatible("key", server.uri())
+        .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::Medium));
+    let result = client
+        .extract::<Contact>("test")
+        .on_stream(|_| {})
+        .await
+        .unwrap();
+
+    assert_eq!(result.value.name, "Streamed");
+    assert_eq!(result.usage.output_tokens, 115);
 }

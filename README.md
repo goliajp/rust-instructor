@@ -21,6 +21,7 @@ Define a Rust struct → instructors generates the JSON Schema → LLM returns v
 - **Streaming** — partial JSON tokens as they arrive (OpenAI, Anthropic, Gemini)
 - **Batch + concurrent** — process hundreds of prompts with configurable concurrency via `Semaphore`
 - **Vision** — extract structured data from images (URL or base64)
+- **Thinking control** — dial Gemini's reasoning depth up or down per client
 - **Cost tracking** — per-request token count and cost estimation via [tiktoken](https://crates.io/crates/tiktoken)
 
 ## Why instructors?
@@ -63,7 +64,7 @@ instructors = "1"
 | Anthropic | `Client::anthropic(key)` | forced `tool_use`, or native `output_config` (opt-in) |
 | OpenAI-compatible | `Client::openai_compatible(key, url)` | Same as OpenAI (DeepSeek, Together, etc.) |
 | Anthropic-compatible | `Client::anthropic_compatible(key, url)` | Same as Anthropic |
-| Google Gemini | `Client::gemini(key)` | `response_schema` structured JSON |
+| Google Gemini | `Client::gemini(key)` | `response_schema` structured JSON, optional thinking control |
 | Gemini-compatible | `Client::gemini_compatible(key, url)` | Same as Gemini |
 
 ### Default models
@@ -91,6 +92,42 @@ tool round-trip:
 let client = Client::anthropic("sk-ant-...")
     .with_anthropic_structured_output();
 ```
+
+### Gemini thinking
+
+Gemini models allow configuring their thinking effort. Version 2 and 3 models differ
+in how they can be configured. Version 2 models accept a budgeting parameter and
+version 3 models accept a thinking level.
+
+You can configure these parameters with the `with_gemini_thinking` setter:
+
+```rust
+use instructors::{GeminiThinking, ThinkingLevel};
+
+// a mostly-transcription extraction: don't pay for deep reasoning
+let client = Client::gemini("AIza...")
+    .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::Low));
+
+// a schema that needs inference across a long document
+let client = Client::gemini("AIza...")
+    .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::High));
+```
+
+| Variant | Wire | Generation | Value |
+|---|---|---|---|
+| `Level(ThinkingLevel)` | `thinkingLevel` | Gemini 3 | `Minimal`, `Low`, `Medium`, `High` |
+| `Budget(i32)` | `thinkingBudget` | Gemini 2.5 (legacy) | token ceiling, or `-1` for dynamic |
+
+```rust
+let client = Client::gemini("AIza...")
+    .with_model("gemini-2.5-flash")
+    .with_gemini_thinking(GeminiThinking::Budget(1024));
+```
+
+Thinking tokens are billed as output tokens, so they are summed into
+`usage.output_tokens` and the cost estimate along with the answer's own tokens.
+
+> **Gemini only.** The method is a no-op on OpenAI and Anthropic clients.
 
 
 ```rust
@@ -358,6 +395,12 @@ let b: TypeB = client.extract("...").await?.value;
 // override for a specific request
 let c: TypeC = client.extract("...").model("gpt-5.6-terra").await?.value;
 ```
+
+Two defaults are provider-specific and can only be set on the client, because
+they change the shape of the request rather than one field of it:
+`with_anthropic_structured_output()` and
+`with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::Low))`. Each is a
+no-op on the other providers' clients.
 
 ## Cost Tracking
 
