@@ -4,6 +4,7 @@ mod openai;
 
 pub(crate) use anthropic::send_anthropic;
 pub(crate) use gemini::send_gemini;
+pub use gemini::{GeminiThinking, ThinkingLevel};
 pub(crate) use openai::send_openai;
 
 pub(crate) type StreamCallback<'a> = Option<&'a (dyn Fn(&str) + Send + Sync)>;
@@ -34,6 +35,7 @@ pub(crate) enum ProviderKind {
     Gemini {
         api_key: String,
         base_url: String,
+        thinking: Option<GeminiThinking>,
     },
 }
 
@@ -156,7 +158,11 @@ impl ProviderKind {
                 )
                 .await
             }
-            Self::Gemini { api_key, base_url } => {
+            Self::Gemini {
+                api_key,
+                base_url,
+                thinking,
+            } => {
                 send_gemini(
                     http,
                     base_url,
@@ -167,6 +173,7 @@ impl ProviderKind {
                     schema,
                     temperature,
                     max_tokens,
+                    *thinking,
                     on_stream,
                 )
                 .await
@@ -260,6 +267,7 @@ mod tests {
         let provider = ProviderKind::Gemini {
             api_key: "key".into(),
             base_url: "url".into(),
+            thinking: None,
         };
         assert_eq!(provider.default_model(), "gemini-3.6-flash");
     }
@@ -282,6 +290,7 @@ mod tests {
         let gemini = ProviderKind::Gemini {
             api_key: "k".into(),
             base_url: "u".into(),
+            thinking: None,
         };
         assert_eq!(gemini.kind_name(), "gemini");
     }

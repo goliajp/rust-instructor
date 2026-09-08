@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 
 use crate::backoff::BackoffConfig;
 use crate::error::{Error, Result};
-use crate::provider::{ImageInput, Message, ProviderKind, RawResponse};
+use crate::provider::{GeminiThinking, ImageInput, Message, ProviderKind, RawResponse};
 use crate::usage::Usage;
 use crate::validate::{Validate, ValidationError};
 
@@ -27,7 +27,8 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 ///
 /// Supports OpenAI (via structured output), Anthropic (via tool use, or native
 /// structured output with [`Client::with_anthropic_structured_output`]),
-/// Google Gemini (via response_schema), and any compatible API.
+/// Google Gemini (via response_schema, with optional thinking control via
+/// [`Client::with_gemini_thinking`]), and any compatible API.
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -154,6 +155,7 @@ impl Client {
             provider: ProviderKind::Gemini {
                 api_key: api_key.into(),
                 base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+                thinking: None,
             },
             default_model: None,
             default_system: None,
@@ -180,6 +182,7 @@ impl Client {
             provider: ProviderKind::Gemini {
                 api_key: api_key.into(),
                 base_url: base_url.into(),
+                thinking: None,
             },
             default_model: None,
             default_system: None,
@@ -266,6 +269,37 @@ impl Client {
         } = &mut self.provider
         {
             *structured_output = true;
+        }
+        self
+    }
+
+    /// Set how hard Gemini may think before answering, sent as
+    /// `generationConfig.thinkingConfig`.
+    ///
+    /// Gemini has two mutually exclusive parameters for this — one per
+    /// generation — so [`GeminiThinking`] makes you name the one you mean:
+    /// [`Level`](GeminiThinking::Level) for Gemini 3, or the legacy
+    /// [`Budget`](GeminiThinking::Budget) for a 2.5 model.
+    ///
+    /// Has no effect on OpenAI or Anthropic clients.
+    ///
+    /// ```rust,no_run
+    /// use instructors::{Client, GeminiThinking, ThinkingLevel};
+    ///
+    /// // Gemini 3: a relative allowance
+    /// let client = Client::gemini("AIza...")
+    ///     .with_gemini_thinking(GeminiThinking::Level(ThinkingLevel::Low));
+    ///
+    /// // a pinned 2.5 model: a token ceiling
+    /// let legacy = Client::gemini("AIza...")
+    ///     .with_model("gemini-2.5-flash")
+    ///     .with_gemini_thinking(GeminiThinking::Budget(1024));
+    /// ```
+    ///
+    /// [`Usage::output_tokens`]: crate::Usage::output_tokens
+    pub fn with_gemini_thinking(mut self, thinking: GeminiThinking) -> Self {
+        if let ProviderKind::Gemini { thinking: slot, .. } = &mut self.provider {
+            *slot = Some(thinking);
         }
         self
     }
