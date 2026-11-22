@@ -22,11 +22,12 @@ tokio = { version = "1", features = ["sync", "time"] }
 thiserror = "2"
 rand = "0.10"
 # only `tiktoken::pricing` is used, never the tokenizer — skipping the default
-# `vocabs-all` feature keeps ~5 MB of vocabulary data out of the binary.
-# 4.1.1 is a floor: 4.1 is the release whose `estimate_cost` resolves the ids
-# the provider APIs actually accept, which this crate used to normalize itself;
-# 4.1.1 is where the vendor coverage behind those ids caught up.
-tiktoken = { version = "4.1.1", optional = true, default-features = false }
+# `vocabs-all` feature keeps ~8 MB of vocabulary data out of the binary.
+# Nothing below 4.1.1 works here: 4.1 is the release whose `estimate_cost`
+# resolves the ids the provider APIs actually accept, which this crate used to
+# normalize itself, and 4.1.1 is where the vendor coverage behind those ids
+# caught up. 5.x brings the 2026-11 price table.
+tiktoken = { version = "5.1.1", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
 jsonrepair = "0.1"
 
