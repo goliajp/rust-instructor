@@ -13,7 +13,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+      # instructors-derive first, then instructors
+      - run: cargo publish --workspace --token ${{ secrets.CRATES_IO_TOKEN }}
 
   github-release:
     name: github release
