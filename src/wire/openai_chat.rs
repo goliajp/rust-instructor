@@ -363,12 +363,12 @@ fn finish(
     finish_reason: Option<&str>,
 ) -> Result<Answer, Fail> {
     if let Some(text) = refusal.filter(|t| !t.is_empty()) {
-        return Err(Fail::Refusal(text.to_owned()));
+        return Err(Fail::Refusal(text.to_owned(), usage));
     }
     let stop = match finish_reason {
         Some("length") => Stop::Truncated("finish_reason: length".into()),
         Some("content_filter") if content.is_empty() => {
-            return Err(Fail::Refusal("finish_reason: content_filter".into()));
+            return Err(Fail::Refusal("finish_reason: content_filter".into(), usage));
         }
         _ => Stop::Done,
     };

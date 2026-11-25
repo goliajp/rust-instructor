@@ -281,6 +281,17 @@ where
 
     fn into_future(self) -> Self::IntoFuture {
         let (ex, transports, timeout) = self.split();
+        #[cfg(feature = "tracing")]
+        {
+            use tracing::Instrument;
+            let span = tracing::info_span!(
+                "instructors.extract",
+                provider = ex.provider_name(),
+                model = ex.model(),
+            );
+            Box::pin(drive::run(ex, transports, timeout).instrument(span))
+        }
+        #[cfg(not(feature = "tracing"))]
         Box::pin(drive::run(ex, transports, timeout))
     }
 }

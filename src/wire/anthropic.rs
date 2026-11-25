@@ -232,7 +232,7 @@ fn finish(content: String, usage: Usage, stop_reason: Option<&str>) -> Result<An
             } else {
                 content
             };
-            return Err(Fail::Refusal(text));
+            return Err(Fail::Refusal(text, usage));
         }
         Some(r @ ("max_tokens" | "model_context_window_exceeded")) => {
             Stop::Truncated(format!("stop_reason: {r}"))

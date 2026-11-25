@@ -1,3 +1,5 @@
+#![expect(dead_code, reason = "the 1.5 module is kept whole as a reference")]
+
 //! The 1.5 schema pipeline (schemars, then normalization), kept as the
 //! reference the derive is compared against.
 

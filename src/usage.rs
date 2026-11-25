@@ -18,7 +18,8 @@ pub struct Usage {
     /// Output tokens spent on reasoning: OpenAI `reasoning_tokens`, Gemini
     /// `thoughtsTokenCount`.
     pub reasoning_tokens: u64,
-    /// Requests that got a response, successful or not.
+    /// Responses from the model: answers, including rejected ones, and
+    /// refusals. HTTP errors are not counted.
     pub requests: u32,
     /// Estimated cost in USD, priced per request and summed (feature
     /// `cost-tracking`). `None` when any request was for a model the price

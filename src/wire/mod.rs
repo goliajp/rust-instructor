@@ -132,9 +132,10 @@ pub(crate) struct Answer {
 }
 
 /// A response that is not an answer.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum Fail {
-    Refusal(String),
+    /// The model declined; the usage of the response that said so.
+    Refusal(String, Usage),
     /// The body is not the provider's response format.
     Malformed(String),
     Unsupported(String),

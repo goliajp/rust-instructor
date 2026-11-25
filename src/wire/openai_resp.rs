@@ -200,13 +200,13 @@ fn to_usage(u: &UsageIn) -> Usage {
 }
 
 fn finish(r: &Response<'_>, content: String, refusal: String) -> Result<Answer, Fail> {
-    if !refusal.is_empty() {
-        return Err(Fail::Refusal(refusal));
-    }
     let usage = r.usage.as_ref().map(to_usage).unwrap_or_default();
+    if !refusal.is_empty() {
+        return Err(Fail::Refusal(refusal, usage));
+    }
     let stop = match (r.status.as_deref(), &r.incomplete_details) {
         (Some("incomplete"), Some(d)) if d.reason.as_deref() == Some("content_filter") => {
-            return Err(Fail::Refusal("incomplete: content_filter".into()));
+            return Err(Fail::Refusal("incomplete: content_filter".into(), usage));
         }
         (Some("incomplete"), d) => Stop::Truncated(format!(
             "incomplete: {}",
@@ -286,7 +286,7 @@ impl StreamAcc {
             Some(r) => r,
             None => {
                 if !self.refusal.is_empty() {
-                    return Err(Fail::Refusal(self.refusal));
+                    return Err(Fail::Refusal(self.refusal, Usage::default()));
                 }
                 Ok(Answer {
                     content: self.content,

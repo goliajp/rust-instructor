@@ -235,14 +235,16 @@ impl StreamAcc {
 
     pub(crate) fn finish(self) -> Result<Answer, Fail> {
         if let Some(b) = self.block_reason {
-            return Err(Fail::Refusal(format!("prompt blocked: {b}")));
+            return Err(Fail::Refusal(format!("prompt blocked: {b}"), self.usage));
         }
         let stop = match self.finish_reason.as_deref() {
             Some("MAX_TOKENS") => Stop::Truncated("finishReason: MAX_TOKENS".into()),
             Some(
                 r @ ("SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII"
                 | "IMAGE_SAFETY"),
-            ) => return Err(Fail::Refusal(format!("finishReason: {r}"))),
+            ) => {
+                return Err(Fail::Refusal(format!("finishReason: {r}"), self.usage));
+            }
             _ => Stop::Done,
         };
         Ok(Answer {

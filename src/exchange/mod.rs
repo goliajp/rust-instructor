@@ -168,6 +168,16 @@ impl<O: DeserializeOwned> Exchange<O> {
         self.idx
     }
 
+    #[cfg(feature = "tracing")]
+    pub(crate) fn provider_name(&self) -> &'static str {
+        self.name()
+    }
+
+    #[cfg(feature = "tracing")]
+    pub(crate) fn model(&self) -> &str {
+        &self.spec.targets[self.idx].model
+    }
+
     /// Usage of every response received so far.
     pub fn usage(&self) -> Usage {
         let mut u = self.total.clone();
@@ -438,6 +448,8 @@ impl<O: DeserializeOwned> Exchange<O> {
     }
 
     fn succeed(&mut self, value: O, truncated: bool) {
+        #[cfg(feature = "tracing")]
+        tracing::info!(requests = self.usage.requests, "extraction succeeded");
         self.total.merge(&self.usage);
         self.usage = Usage::default();
         if let Some(h) = &self.spec.hooks.on_response {
@@ -452,12 +464,16 @@ impl<O: DeserializeOwned> Exchange<O> {
 
     fn fail_with(&mut self, f: Fail, status: u16) {
         let provider = self.name();
-        self.fail(match f {
-            Fail::Refusal(text) => Error::Refusal {
-                provider,
-                text,
-                usage: Usage::default(),
-            },
+        let err = match f {
+            Fail::Refusal(text, u) => {
+                let model = self.spec.targets[self.idx].model.clone();
+                self.usage.add(&u, &model);
+                Error::Refusal {
+                    provider,
+                    text,
+                    usage: Usage::default(),
+                }
+            }
             Fail::Malformed(message) => Error::Api {
                 provider,
                 status,
@@ -466,11 +482,14 @@ impl<O: DeserializeOwned> Exchange<O> {
                 usage: Usage::default(),
             },
             Fail::Unsupported(what) => Error::Unsupported { provider, what },
-        });
+        };
+        self.fail(err);
     }
 
     /// The current provider is done for; try the next one or finish.
     fn fail(&mut self, mut err: Error) {
+        #[cfg(feature = "tracing")]
+        tracing::info!(error = %err, "provider failed");
         self.total.merge(&self.usage);
         self.usage = Usage::default();
         if let Some(u) = err.usage_mut() {
