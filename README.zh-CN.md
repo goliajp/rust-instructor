@@ -13,7 +13,7 @@
 
 crate 自己不依赖任何第三方运行时库：schema 派生宏、JSON 解析、修复和流式解析都在 crate 里实现，你的类型只需要和 serde 打交道。HTTP 客户端是一个 trait，默认实现是带 rustls 的 reqwest。用 `default-features = false` 时，crate 只负责生成请求和解析响应，本身不做任何 I/O，也不需要异步运行时，可以编译到 `wasm32-unknown-unknown`。
 
-PERF_SUMMARY
+把 OpenAI 的响应体解析成一个 1.2 KB 的 `Invoice` 要 3.0 µs，用 `serde_json` 要 4.1 µs。通过本机回环 HTTP 完整调用一次 `extract` 要 53 到 54 µs，和同一进程里直接用 `reqwest` 发 POST 再解析差不多；rstructor 0.6.0 要 77 µs，rig-core 0.47.1 要 81 µs。测量条件和全部数据见[性能](#性能)。
 
 ## 快速开始
 
@@ -295,7 +295,45 @@ instructors = { version = "2", default-features = false, features = ["derive", "
 
 ## 性能
 
-PERF_SECTION
+2026 年 11 月 26 日在 Apple M4 Pro Mac mini（14 核）上测量，测量期间独占基准测试锁；release 构建，开启 LTO，codegen-units 为 1，rustc 1.100.0，serde 1.0.229，serde_json 1.0.154，reqwest 0.13.5。每 15 秒采样一次 1 分钟平均负载，测量期间在 1.7 到 2.0 之间。每一行都测了两遍，两遍相隔几秒，表中是每一遍的中位数（端到端的各行 5 轮，其余 7 轮或 9 轮）。测试数据是一张 `Invoice`：两个嵌套地址、一个枚举、8 个带可选字段的明细行，含中日文字符和转义引号，JSON 共 1,247 字节。所有请求都发给本机回环的 HTTP 服务，不调用任何真实接口。JSON 和修复的数据用 `cargo bench --bench json --features fuzzing` 测得，其余各行的测试程序不在本仓库里。
+
+**一次 `extract` 调用的完整耗时**（OpenAI 协议，在保持连接的 HTTP/1.1 上顺序调用，5 × 5,000 次）。基线是用同一版本的 `reqwest` 发送事先构造好的请求体，再用 `serde_json` 解析响应。
+
+| 客户端 | 每次调用，第一遍 / 第二遍 |
+|---|---:|
+| 基线 | 53.0 / 53.3 µs |
+| instructors 2.0 | 53.9 / 52.7 µs |
+| instructors 1.5.1 | 55.2 / 53.9 µs |
+| rstructor 0.6.0 | 77.4 / 77.0 µs |
+| rig-core 0.47.1（`output_schema`，再用 `serde_json::from_str`）| 80.6 / 80.6 µs |
+
+两遍之间，基线相差 0.3 µs，instructors 的两行相差 1.3 µs，所以这里分不出 2.0 和基线谁快；2.0 在两遍里都比 1.5.1 快 1.2 µs。Anthropic 工具调用形式的回答，2.0 要 52.8 / 52.3 µs，1.5.1 要 53.4 / 52.0 µs。回答分 311 个事件流式到达、每次都取部分值时，2.0 要 97.5 / 97.9 µs，1.5.1 要 97.2 / 98.2 µs。这两项看不出差别。真实的模型调用要几百毫秒甚至更久，所以这些时间影响的是大批量处理和代理服务的 CPU 开销。
+
+不算网络，一次 OpenAI 抽取构造请求加解析回答共 3.6 µs，其中构造请求 0.39 µs。流式部分值解析器处理整个回答（308 段、每段 4 字节、每段之后取一次视图）要 5.8 / 5.7 µs，1.5.1 要 5.7 / 5.6 µs，两个版本的解析器源码相同。
+
+**本 crate 的 JSON 代码和 serde_json 对比**，第一遍 / 第二遍：
+
+| 做了什么 | serde_json | instructors 2.0 |
+|---|---:|---:|
+| 回答内容 → `Invoice` | 1,562 / 1,563 ns | 1,346 / 1,372 ns |
+| OpenAI 响应体 → `Invoice`，外层借用 | 4,057 / 4,101 ns | 2,954 / 2,977 ns |
+| Anthropic 工具调用回答 → `Invoice` | 3,057 / 3,058 ns | 2,497 / 2,496 ns |
+| 一个流式数据块，只解析外层 | 231 / 229 ns | 184 / 185 ns |
+| 把 4,167 字节的请求写进复用的缓冲区 | 1,380 / 1,346 ns | 806 / 812 ns |
+
+**修复**，从输入到修复后的文本，第一遍 / 第二遍：
+
+| 输入 | jsonrepair 0.1.0 | instructors 2.0 |
+|---|---:|---:|
+| 合法 JSON | 2.66 / 2.68 µs | 0.84 / 0.84 µs |
+| 多余的尾逗号 | 7.79 / 7.66 µs | 2.90 / 2.90 µs |
+| 单引号 | 6.39 / 6.05 µs | 3.18 / 3.22 µs |
+| markdown 代码块 | 2.59 / 2.69 µs | 0.87 / 0.87 µs |
+| 在 2/3 长度处截断 | 6.55 / 6.76 µs | 1.97 / 1.96 µs |
+
+前四种输入，两个库修复后都能反序列化成 `Invoice`。截断的输入不能，因为缺必填字段；如果缺的字段都是可选的，可以用 `accept_truncated`。
+
+**构建时的 crate 数**（`cargo tree -e normal`，去重，含本 crate，x86_64 Linux）：默认 89 个（1.5.1 是 111 个）；`default-features = false, features = ["derive"]` 时 9 个，其中 7 个是 serde 和它的 derive 用到的。1.5.1 关掉默认 feature 时是 108 个。
 
 ## 许可证
 
