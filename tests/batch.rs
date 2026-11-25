@@ -1,18 +1,18 @@
 use instructors::{Client, Error, Validate, ValidationError};
-use schemars::JsonSchema;
+use instructors::{RetryPolicy, Schema};
 use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
 }
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct StrictUser {
     name: String,
     age: u32,
@@ -54,7 +54,7 @@ async fn batch_basic() {
         .await;
 
     let client = Client::openai_compatible("key", server.uri());
-    let prompts = vec!["prompt1".into(), "prompt2".into(), "prompt3".into()];
+    let prompts = vec!["prompt1", "prompt2", "prompt3"];
     let results = client
         .extract_batch::<Contact>(prompts)
         .concurrency(3)
@@ -83,12 +83,12 @@ async fn batch_with_model() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<Contact>(vec!["a".into(), "b".into()])
+        .extract_batch::<Contact>(vec!["a", "b"])
         .model("gpt-5.6-luna")
         .system("extract")
         .temperature(0.5)
         .max_tokens(1024)
-        .max_retries(0)
+        .max_attempts(1)
         .run()
         .await;
 
@@ -109,8 +109,8 @@ async fn batch_partial_failure() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<Contact>(vec!["a".into(), "b".into()])
-        .max_retries(0)
+        .extract_batch::<Contact>(vec!["a", "b"])
+        .max_attempts(1)
         .concurrency(1)
         .run()
         .await;
@@ -135,7 +135,7 @@ async fn batch_with_validation() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<StrictUser>(vec!["a".into(), "b".into()])
+        .extract_batch::<StrictUser>(vec!["a", "b"])
         .validate(|u: &StrictUser| {
             if u.age > 100 {
                 Err("too old".into())
@@ -165,7 +165,7 @@ async fn batch_validation_fails() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<StrictUser>(vec!["a".into()])
+        .extract_batch::<StrictUser>(vec!["a"])
         .validate(|u: &StrictUser| {
             if u.age > 150 {
                 Err("unrealistic".into())
@@ -173,19 +173,19 @@ async fn batch_validation_fails() {
                 Ok(())
             }
         })
-        .max_retries(0)
+        .max_attempts(1)
         .run()
         .await;
 
     assert_eq!(results.len(), 1);
-    assert!(matches!(results[0], Err(Error::ValidationFailed { .. })));
+    assert!(matches!(results[0], Err(Error::Validation { .. })));
 }
 
 #[tokio::test]
 async fn batch_empty() {
     let server = MockServer::start().await;
     let client = Client::openai_compatible("key", server.uri());
-    let results = client.extract_batch::<Contact>(vec![]).run().await;
+    let results = client.extract_batch::<Contact>(Vec::<String>::new()).run().await;
 
     assert!(results.is_empty());
 }
@@ -205,7 +205,7 @@ async fn batch_concurrency_one() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<Contact>(vec!["a".into(), "b".into(), "c".into()])
+        .extract_batch::<Contact>(vec!["a", "b", "c"])
         .concurrency(1) // sequential
         .run()
         .await;
@@ -237,11 +237,11 @@ async fn batch_concurrency_one_with_failure() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri());
+    let client = Client::openai_compatible("key", server.uri()).with_retry(RetryPolicy::none());
     let results = client
-        .extract_batch::<Contact>(vec!["good".into(), "bad".into()])
+        .extract_batch::<Contact>(vec!["good", "bad"])
         .concurrency(1)
-        .max_retries(0)
+        .max_attempts(1)
         .run()
         .await;
 
