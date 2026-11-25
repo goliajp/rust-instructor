@@ -45,6 +45,7 @@ jobs:
         with:
           tool: cargo-hack
       - run: cargo hack check --each-feature
+      - run: cargo check --manifest-path fuzz/Cargo.toml
       - name: the derive adds no crate and no syn feature to a serde user's build
         run: |
           mkdir -p "$RUNNER_TEMP/user/src"

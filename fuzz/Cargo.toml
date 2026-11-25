@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-instructors = { path = "..", default-features = false, features = ["fuzzing"] }
+instructors = { path = "..", default-features = false, features = ["fuzzing", "serde_json"] }
 serde = { version = "1", features = ["derive"] }
 # exact float parsing, so values compare bit for bit
 serde_json = { version = "1", features = ["float_roundtrip"] }
