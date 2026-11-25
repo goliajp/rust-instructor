@@ -49,7 +49,7 @@ jobs:
           echo 'fn main() {}' > src/main.rs
           features=$(cargo tree -e features -i syn --depth 1 | grep -o 'syn feature "[a-z-]*"' | sort -u | tr '\n' ' ')
           echo "$features"
-          test "$features" = 'syn feature "clone-impls" syn feature "default" syn feature "derive" syn feature "parsing" syn feature "printing" syn feature "proc-macro" '
+          test "$features" = 'syn feature "clone-impls" syn feature "derive" syn feature "parsing" syn feature "printing" syn feature "proc-macro" '
 
   lint:
     name: fmt + clippy
