@@ -41,6 +41,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --no-default-features
       - run: cargo check --no-default-features --features derive,cost-tracking --target wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      - run: cargo hack check --each-feature
       - name: the derive adds no crate and no syn feature to a serde user's build
         run: |
           mkdir -p "$RUNNER_TEMP/user/src"
@@ -62,6 +66,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   audit:
     name: audit + deny

@@ -145,4 +145,6 @@ mod diff_tests;
 #[cfg(test)]
 mod repair_tests;
 #[cfg(test)]
+mod suite_tests;
+#[cfg(test)]
 mod tests;

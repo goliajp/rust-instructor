@@ -10,7 +10,7 @@ documentation = "https://docs.rs/instructors"
 keywords = ["llm", "structured-output", "openai", "anthropic", "gemini"]
 categories = ["api-bindings", "asynchronous", "parser-implementations"]
 readme = "README.md"
-exclude = ["fuzz"]
+exclude = ["fuzz", "tests/json_suite"]
 
 [workspace]
 members = ["derive"]

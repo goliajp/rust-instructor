@@ -10,7 +10,12 @@ use crate::schema::cache::{Dialect, entry_for};
 
 fn props<T: Schema>() -> Vec<String> {
     let v: Value = serde_json::from_str(entry_for::<T>(false).get(Dialect::AnthropicTool)).unwrap();
-    v["properties"].as_object().unwrap().keys().cloned().collect()
+    v["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
 }
 
 fn variants<T: Schema>() -> Vec<String> {
@@ -70,11 +75,19 @@ rule!(screaming_kebab, "SCREAMING-KEBAB-CASE");
 fn rename_all_fields_and_variant_rename_all() {
     #[expect(dead_code, reason = "only deserialized")]
     #[derive(Deserialize, Schema)]
-    #[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+    #[serde(
+        tag = "kind",
+        rename_all = "snake_case",
+        rename_all_fields = "camelCase"
+    )]
     enum E {
-        FirstThing { some_field: u8 },
+        FirstThing {
+            some_field: u8,
+        },
         #[serde(rename_all = "kebab-case")]
-        SecondThing { other_field: u8 },
+        SecondThing {
+            other_field: u8,
+        },
     }
     let v: Value = serde_json::from_str(entry_for::<E>(false).get(Dialect::AnthropicTool)).unwrap();
     for variant in v["oneOf"].as_array().unwrap() {
