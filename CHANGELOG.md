@@ -70,7 +70,7 @@ date.
 ## [1.3.4] - 2026-06-07
 
 ### Changed
-- 防腐 maintenance release. No behavior change.
+- Maintenance release. No behavior change.
 - Drop `rust-version = "1.94"` pin from `Cargo.toml` — the crate tracks
   stable; the pin was a stale snapshot left over from the migration.
 - Switch `benches/schema.rs` from deprecated `criterion::black_box` to
@@ -87,7 +87,7 @@ date.
 ## [1.3.2] - 2026-04-24
 
 ### Changed
-- Migrated from `goliajp/airs` mono-repo to standalone `goliajp/rust-instructor`.
+- Moved to its own repository, `goliajp/rust-instructor`.
   No code changes; `repository` URL updated. `tiktoken` dep switched from workspace
   path to crates.io (`tiktoken = "3.1"`, optional, behind `cost-tracking` feature).
 

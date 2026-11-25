@@ -7,8 +7,5 @@ Cargo.lock
 .idea/
 .vscode/
 
-# Claude Code
-.claude/
-
 # local
 .env.local

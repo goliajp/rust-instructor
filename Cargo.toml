@@ -2,14 +2,13 @@
 name = "instructors"
 version = "1.4.1"
 edition = "2024"
-description = "Type-safe structured output extraction from LLMs. The Rust instructor."
-license = "MIT"
+description = "Typed structured output from LLMs over the OpenAI, Anthropic and Gemini APIs, with validation, retry and streaming partial JSON"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/goliajp/rust-instructor"
-homepage = "https://github.com/goliajp/rust-instructor"
 authors = ["GOLIA株式会社", "Li Hao <lihao@golia.jp>"]
 documentation = "https://docs.rs/instructors"
-keywords = ["llm", "openai", "anthropic", "structured-output", "instructor"]
-categories = ["api-bindings", "data-structures"]
+keywords = ["llm", "structured-output", "openai", "anthropic", "gemini"]
+categories = ["api-bindings", "asynchronous", "parser-implementations"]
 readme = "README.md"
 
 [dependencies]
@@ -21,12 +20,8 @@ futures = "0.3"
 tokio = { version = "1", features = ["sync", "time"] }
 thiserror = "2"
 rand = "0.10"
-# only `tiktoken::pricing` is used, never the tokenizer — skipping the default
-# `vocabs-all` feature keeps ~8 MB of vocabulary data out of the binary.
-# Nothing below 4.1.1 works here: 4.1 is the release whose `estimate_cost`
-# resolves the ids the provider APIs actually accept, which this crate used to
-# normalize itself, and 4.1.1 is where the vendor coverage behind those ids
-# caught up. 5.x brings the 2026-11 price table.
+# only `tiktoken::pricing` is used; without default features no vocabulary
+# data is linked
 tiktoken = { version = "5.4", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
 jsonrepair = "0.1"
