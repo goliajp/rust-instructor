@@ -24,7 +24,6 @@ rand = "0.10"
 # data is linked
 tiktoken = { version = "5.4", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
-jsonrepair = "0.1"
 
 [features]
 default = ["cost-tracking"]
