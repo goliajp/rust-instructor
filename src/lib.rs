@@ -53,6 +53,10 @@
 
 extern crate self as instructors;
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+#[path = "private_api.rs"]
+pub mod __private;
 mod batch;
 mod client;
 mod drive;

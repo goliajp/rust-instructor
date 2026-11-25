@@ -205,7 +205,6 @@ fn cut(content: &str) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "bug: json::repair (jsonrepair backend) turns a cut key into `\"ema\":}`, which does not parse"]
 async fn accept_truncated_returns_the_complete_fields() {
     let (base, _) = start(vec![Reply::json(
         "/chat",
