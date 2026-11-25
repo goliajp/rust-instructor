@@ -248,6 +248,23 @@ impl Client {
         Extract::new(self, prompt.into(), entry_for::<T>(false), false)
     }
 
+    /// Extract a `T` that derives `schemars::JsonSchema` (feature
+    /// `schemars`), for types that cannot switch to [`Schema`] yet. Field
+    /// order follows schemars: alphabetical unless `schemars/preserve_order`
+    /// is enabled.
+    #[cfg(feature = "schemars")]
+    pub fn extract_schemars<T>(&self, prompt: impl Into<String>) -> Extract<'_, T>
+    where
+        T: DeserializeOwned + schemars::JsonSchema + 'static,
+    {
+        Extract::new(
+            self,
+            prompt.into(),
+            crate::schema::schemars::entry_for::<T>(false),
+            false,
+        )
+    }
+
     /// Extract a list of `T`. The schema sent is `{"items": [T, ...]}`,
     /// because strict structured output needs an object at the root.
     pub fn extract_many<T: DeserializeOwned + Schema>(

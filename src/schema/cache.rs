@@ -59,6 +59,16 @@ impl SchemaEntry {
         }
     }
 
+    #[cfg(feature = "schemars")]
+    pub(crate) fn from_parts(name: String, base: J, recursive: bool) -> Self {
+        Self {
+            name,
+            recursive,
+            base,
+            built: Default::default(),
+        }
+    }
+
     /// True when the schema refers to itself, which some dialects cannot
     /// express.
     pub(crate) fn recursive(&self) -> bool {

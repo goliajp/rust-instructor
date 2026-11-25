@@ -412,3 +412,20 @@ fn generic_instances_are_distinct_and_stable() {
 mod order;
 
 use order::keys;
+
+#[cfg(feature = "schemars")]
+#[test]
+fn schemars_bridge_matches_1_5() {
+    for list in [false, true] {
+        let got: Value =
+            serde_json::from_str(super::schemars::entry_for::<Invoice>(list).get(Dialect::Strict))
+                .unwrap();
+        let mut want = theirs::<Invoice>(list, oracle::Dialect::OpenAi);
+        assert_eq!(diff(&got, &want["json_schema"]["schema"].take(), ""), None);
+        for (d, o) in PAIRS {
+            let got: Value =
+                serde_json::from_str(super::schemars::entry_for::<Invoice>(list).get(d)).unwrap();
+            assert_eq!(diff(&got, &theirs::<Invoice>(list, o), ""), None, "{d:?}");
+        }
+    }
+}

@@ -9,6 +9,8 @@ mod cache;
 mod dialect;
 mod impls;
 mod lower;
+#[cfg(feature = "schemars")]
+pub(crate) mod schemars;
 mod tree;
 
 use std::sync::{Mutex, OnceLock};
@@ -319,3 +321,50 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod oracle_15;
 #[cfg(test)]
 mod tests;
+
+/// The derive rejects what it cannot describe.
+///
+/// ```compile_fail
+/// #[derive(serde::Deserialize, instructors::Schema)]
+/// struct S {
+///     #[serde(deserialize_with = "f")]
+///     a: u8,
+/// }
+/// ```
+///
+/// ```compile_fail
+/// #[derive(serde::Deserialize, instructors::Schema)]
+/// #[serde(rename_all = "Train-Case")]
+/// struct S { a: u8 }
+/// ```
+///
+/// ```compile_fail
+/// #[derive(serde::Deserialize, instructors::Schema)]
+/// #[serde(try_from = "u8")]
+/// struct S { a: u8 }
+/// ```
+///
+/// ```compile_fail
+/// #[derive(instructors::Schema)]
+/// struct S {
+///     #[schema(minimum = 1)]
+///     a: u8,
+/// }
+/// ```
+///
+/// ```compile_fail
+/// #[derive(instructors::Schema)]
+/// union U { a: u8 }
+/// ```
+///
+/// The same types are accepted with `like`:
+///
+/// ```
+/// #[derive(serde::Deserialize, instructors::Schema)]
+/// #[serde(try_from = "u8")]
+/// #[schema(like = u8)]
+/// struct S { a: u8 }
+/// # impl TryFrom<u8> for S { type Error = String; fn try_from(a: u8) -> Result<Self, String> { Ok(S { a }) } }
+/// ```
+#[cfg(doctest)]
+pub struct DeriveErrors;
