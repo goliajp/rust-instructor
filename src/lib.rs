@@ -34,7 +34,8 @@
 //! - The core builds request bytes and parses response bytes; it does no
 //!   I/O and needs no async runtime. [`Extract::exchange`] hands you that
 //!   state machine ([`Exchange`]) to drive with any HTTP client.
-//! - `.await` on an extraction drives the exchange over a [`Transport`]:
+//! - `.await` on an extraction drives the exchange over a
+//!   [`Transport`](transport::Transport):
 //!   reqwest on tokio with the default `reqwest` feature, or your own
 //!   through [`Client::with_transport`].
 //!
