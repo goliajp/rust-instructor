@@ -1,6 +1,6 @@
 [package]
 name = "instructors"
-version = "1.4.1"
+version = "1.5.0"
 edition = "2024"
 description = "Typed structured output from LLMs over the OpenAI, Anthropic and Gemini APIs, with validation, retry and streaming partial JSON"
 license = "MIT OR Apache-2.0"

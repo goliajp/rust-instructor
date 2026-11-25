@@ -7,7 +7,7 @@
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-> **升级到 1.5**：API 只增不减，但有四处请求内容变了：`Client::anthropic` 改用结构化输出（`output_config.format`）发送 schema，不再强制调用工具，因为 Claude Opus 5.5、Sonnet 5.5 以及 Fable 5.1 之后的模型会拒绝强制工具调用；想要原来的请求，调用 `.with_anthropic_tool_use()`。`extract_many` 要求模型返回 `{"items": [...]}`，不再是裸数组。设置的最大输出 token 数现在会发给 OpenAI 系的接口。Gemini 的 API key 从 URL 移到了 `x-goog-api-key` 请求头。详见 [CHANGELOG](CHANGELOG.md#unreleased)。
+> **升级到 1.5**：API 只增不减，但有四处请求内容变了：`Client::anthropic` 改用结构化输出（`output_config.format`）发送 schema，不再强制调用工具，因为 Claude Opus 5.5、Sonnet 5.5 以及 Fable 5.1 之后的模型会拒绝强制工具调用；想要原来的请求，调用 `.with_anthropic_tool_use()`。`extract_many` 要求模型返回 `{"items": [...]}`，不再是裸数组。设置的最大输出 token 数现在会发给 OpenAI 系的接口。Gemini 的 API key 从 URL 移到了 `x-goog-api-key` 请求头。详见 [CHANGELOG](CHANGELOG.md#150---2026-11-25)。
 
 用 Rust 从 LLM 拿到带类型的结构化输出。给一个类型加上 `Deserialize` 和 `JsonSchema`，调用 `extract`，返回的就是这个类型的值。crate 按各家接口能强制执行的格式发送这个类型的 JSON schema；模型返回的 JSON 有格式错误时先修复；解析失败或者你自己的校验不通过时，把错误发回给模型再问一次。设计上参考了 Python 的 [instructor](https://github.com/567-labs/instructor)。
 
