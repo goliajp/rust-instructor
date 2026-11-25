@@ -164,3 +164,25 @@ fn iterators_and_accessors() {
     assert!(r.get("missing").is_none());
     assert_eq!(format!("{r:?}"), r#"{"k":[1,"two",false,null]}"#);
 }
+
+#[test]
+fn parse_into_a_type_with_optional_fields() {
+    #[derive(serde::Deserialize, Debug, PartialEq)]
+    struct Snap {
+        name: Option<String>,
+        born: Option<u32>,
+    }
+    let mut p = PartialParser::new();
+    p.feed(r#"{"name": "Ada Lov"#);
+    let s: Snap = p.root().unwrap().parse().unwrap();
+    assert_eq!(
+        s,
+        Snap {
+            name: Some("Ada Lov".into()),
+            born: None
+        }
+    );
+    p.feed(r#"elace", "born": 18"#);
+    let s: Snap = p.root().unwrap().parse().unwrap();
+    assert_eq!(s.born, Some(18));
+}

@@ -167,6 +167,14 @@ impl<'a> PartialValue<'a> {
         }
     }
 
+    /// Deserialize the value so far into `T`, typically a type whose fields
+    /// are all `Option`. `None` when it does not fit `T` yet.
+    pub fn parse<T: serde::de::DeserializeOwned>(&self) -> Option<T> {
+        let mut out = Vec::new();
+        self.write_json(&mut out);
+        crate::json::from_slice(&out).ok()
+    }
+
     /// Copy into a `serde_json::Value` (feature `serde_json`).
     #[cfg(feature = "serde_json")]
     pub fn to_value(&self) -> serde_json::Value {

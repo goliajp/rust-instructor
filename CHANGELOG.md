@@ -1,5 +1,139 @@
 # Changelog
 
+## [Unreleased]
+
+2.0 is a breaking release. The default build no longer depends on
+`schemars`, `futures`, `thiserror`, `rand` or `jsonrepair`, and `tokio` is no
+longer a direct dependency; the crate builds requests and parses responses
+without I/O, and the HTTP layer is a trait with reqwest as the default.
+
+### Upgrading from 1.x
+
+Each item lists what to change. Most code needs the first three.
+
+1. **Derive `Schema` instead of `JsonSchema`.** `use instructors::prelude::*`
+   brings `Deserialize` and `Schema`.
+
+   ```rust
+   // 1.x
+   #[derive(Deserialize, JsonSchema)]
+   struct Contact { name: String }
+   // 2.0
+   #[derive(Deserialize, Schema)]
+   struct Contact { name: String }
+   ```
+
+   The derive reads serde attributes (`rename`, `rename_all`, `default`,
+   `skip`, `flatten`, `tag`, `content`, `untagged`, `transparent`,
+   `deny_unknown_fields`) and doc comments, and rejects serde attributes that
+   change the JSON in a way it cannot see (`deserialize_with`, `try_from`)
+   unless you add `#[schema(like = SomeType)]`. A type that only has
+   `schemars::JsonSchema` can still be used with feature `schemars` and
+   `client.extract_schemars::<T>(..)`. `instructors::JsonSchema` is no longer
+   re-exported.
+
+   **Schema properties now follow declaration order** for every provider (in
+   1.x they were alphabetical unless `preserve-order` was on). OpenAI
+   generates fields in schema order, so answers can change. The
+   `preserve-order` feature still exists and does nothing.
+
+2. **Errors.** `Error` is `#[non_exhaustive]`; add a `_ =>` arm.
+
+   | 1.x | 2.0 |
+   |---|---|
+   | `Error::Http(reqwest::Error)` | `Error::Transport { source: TransportError, .. }` |
+   | `Error::Json(serde_json::Error)` | `Error::Api` (malformed response body) or `Error::Parse` |
+   | `Error::ExtractionFailed { retries, .. }` | `Error::Parse { attempts, raw, .. }` |
+   | `Error::ValidationFailed { retries, .. }` | `Error::Validation { attempts, .. }` |
+   | `Error::Other` for refusals | `Error::Refusal { text, .. }` |
+   | `Error::Other` for truncation | `Error::Truncated { reason, raw, .. }` |
+   | `Error::Other` for unsupported settings | `Error::Unsupported { what, .. }` |
+   | `Error::Timeout(Duration)` | `Error::Timeout { after, .. }` |
+   | fallback errors joined in one message | `Error::Fallback`; `chain()` and `source()` walk every provider's error |
+
+   Every variant names its `provider`, and `err.usage()` returns what the
+   failed extraction cost. `refusal()` and `is_truncated()` remain.
+
+3. **Usage.** Counters are `u64`. `total_tokens` and `retries` are methods.
+   New: `cached_input_tokens`, `cache_write_tokens`, `reasoning_tokens`,
+   `requests`. `Usage` is `#[non_exhaustive]`. Anthropic `input_tokens` now
+   includes cache reads and writes. The usage of a fallback that succeeded
+   includes the requests of the providers that failed before it.
+
+4. `ExtractResult<T>` is now `Extracted<T>` with a `truncated` field; the old
+   name is a deprecated alias.
+
+5. **Messages and images.** `Message { role, content, images }` has private
+   fields: use `Message::user(..)` / `Message::assistant(..)` and `.with(part)`.
+   `ImageInput::Url(u)` → `Part::image_url(u)`, `ImageInput::Base64 { .. }` →
+   `Part::image(media_type, data)`; on the builder `.image(..)` / `.images(..)`
+   → `.part(..)`. New: `Part::document` for PDFs.
+
+6. **Retries.** HTTP retries are **on by default**: 3 retries on 408, 429,
+   500, 502, 503, 504, 529 and connection errors, honouring `Retry-After` and
+   `retry-after-ms`. `BackoffConfig` → `RetryPolicy`, `with_retry_backoff` →
+   `with_retry`; `with_retry(RetryPolicy::none())` turns them off.
+   `with_max_retries(n)` / `.max_retries(n)` → `with_max_attempts(n + 1)` /
+   `.max_attempts(n + 1)`.
+
+7. **Re-asks show the model its answer.** After a parse or validation failure
+   the next request appends the model's answer as an assistant message and
+   the error as a user message, instead of rewriting the prompt with
+   "IMPORTANT: A previous extraction attempt produced invalid output".
+
+8. **Hooks.** `on_stream` → `on_delta`. `on_request` receives the
+   `&HttpRequest` (URL, headers, body bytes) instead of `(model, prompt)`.
+   `PartialValue::to_value()` → `to_json()` (or `to_value()` with feature
+   `serde_json`). New: `on_item` for `extract_many`.
+
+9. **Output modes.** `with_anthropic_tool_use()` →
+   `with_output_mode(OutputMode::Tool)`; `with_anthropic_structured_output()` →
+   `with_output_mode(OutputMode::Schema)`. `openai_compatible` clients for
+   DeepSeek, GLM and Qwen hosts now send `response_format: json_object` with
+   the schema in the system prompt, since those APIs document only JSON mode;
+   `with_output_mode(OutputMode::Schema)` restores the 1.x request. Gemini
+   always gets `responseJsonSchema` (1.x sent `responseSchema` unless the type
+   was recursive).
+
+10. **Features and runtime.** `default-features = false` now means no HTTP
+    client: add `features = ["reqwest"]` or call `with_transport`. The core
+    needs no async runtime; the default reqwest transport still needs tokio.
+    TLS is rustls with the ring provider (1.x used aws-lc), so no CMake or C
+    toolchain beyond what ring needs.
+
+11. `extract_batch` takes any `IntoIterator<Item = String>`, and the batch can
+    be awaited directly (`.run()` still works).
+
+12. A `T` that contains `serde_json::value::RawValue` no longer deserializes;
+    use `serde_json::Value`.
+
+### Added
+
+- Sans-IO core: `Extract::exchange()` returns an `Exchange` state machine
+  that yields `Step::Send(HttpRequest)`, `Step::Wait(Duration)` and
+  `Step::Done(result)`; feed it responses with `receive` or, streamed,
+  `receive_head` / `receive_chunk` / `receive_end`. The core builds for
+  `wasm32-unknown-unknown`.
+- `Transport` trait and `Client::with_transport`; `ReqwestTransport` with
+  `client_builder()` for proxies and custom TLS roots.
+- `OutputMode` (`Schema`, `Tool`, `JsonObject`, `Prompt`) with
+  `with_output_mode` / `.output_mode`.
+- OpenAI Responses API, opt-in: `Client::openai(key).with_api(OpenAiApi::Responses)`.
+- `.accept_truncated()`: an answer cut off by the token limit is closed,
+  parsed and returned with `truncated: true` when every missing field is
+  optional; `extract_many` returns the items that were complete.
+- `on_item` for `extract_many`.
+- `Part::document` for PDFs on all providers.
+- Feature `schemars` with `Client::extract_schemars`.
+
+### Fixed
+
+- Schema properties follow declaration order (1.5.0 sent them sorted).
+- An internally tagged enum variant holding a struct
+  (`#[serde(tag = "kind")] enum E { A(Inner) }`) lost the struct's fields in
+  the schema.
+- A refused or failed extraction reports its token usage.
+
 ## [1.5.1] - 2026-11-26
 
 ### Added
