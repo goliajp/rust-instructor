@@ -265,10 +265,8 @@ pub(crate) fn parse<T: DeserializeOwned>(
         Err(e) => e,
     };
     if matches!(stop, Stop::Done)
-        && let Some(crate::json::Repaired {
-            text: std::borrow::Cow::Owned(repaired),
-            ..
-        }) = crate::json::repair(content)
+        && let Some(crate::json::Repaired { text: repaired, .. }) = crate::json::repair(content)
+        && repaired != content
     {
         return parse_direct(&repaired, list)
             .map_err(|e| format!("{e} (repaired: {})", truncate(&repaired, 200)));

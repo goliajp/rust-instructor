@@ -55,5 +55,3 @@ required-features = ["fuzzing"]
 [profile.release]
 lto = true
 codegen-units = 1
-
-
