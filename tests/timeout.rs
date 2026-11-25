@@ -6,6 +6,7 @@ use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Contact {
     name: String,

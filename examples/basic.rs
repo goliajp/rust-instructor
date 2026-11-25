@@ -7,6 +7,10 @@
 
 use instructors::prelude::*;
 
+#[expect(
+    dead_code,
+    reason = "fields are only filled by deserialization and shown through Debug"
+)]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Contact {
     name: String,

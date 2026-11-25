@@ -1,7 +1,7 @@
 use instructors::{Client, Error, ImageInput};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use wiremock::matchers::{method, query_param};
+use wiremock::matchers::{header, method, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -32,7 +32,7 @@ async fn extract_contact() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .and(query_param("key", "test-key"))
+        .and(header("x-goog-api-key", "test-key"))
         .respond_with(ResponseTemplate::new(200).set_body_json(gemini_response(
             r#"{"name": "John Doe", "email": "john@example.com"}"#,
         )))
@@ -57,7 +57,7 @@ async fn extract_with_optional_null() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .and(query_param("key", "key"))
+        .and(header("x-goog-api-key", "key"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(gemini_response(r#"{"name": "Jane", "email": null}"#)),
@@ -79,7 +79,7 @@ async fn retry_on_invalid_json() {
 
     // first: bad JSON
     Mock::given(method("POST"))
-        .and(query_param("key", "key"))
+        .and(header("x-goog-api-key", "key"))
         .respond_with(ResponseTemplate::new(200).set_body_json(gemini_response("not valid json")))
         .expect(1)
         .up_to_n_times(1)
@@ -88,7 +88,7 @@ async fn retry_on_invalid_json() {
 
     // second: good JSON
     Mock::given(method("POST"))
-        .and(query_param("key", "key"))
+        .and(header("x-goog-api-key", "key"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(gemini_response(r#"{"name": "Fixed", "email": null}"#)),
@@ -113,7 +113,7 @@ async fn api_error_status() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .and(query_param("key", "key"))
+        .and(header("x-goog-api-key", "key"))
         .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
         .expect(1)
         .mount(&server)
@@ -154,7 +154,7 @@ async fn extract_with_streaming() {
     sse.push_str(&format!("data: {chunk2}\n\n"));
 
     Mock::given(method("POST"))
-        .and(query_param("key", "key"))
+        .and(header("x-goog-api-key", "key"))
         .and(query_param("alt", "sse"))
         .respond_with(
             ResponseTemplate::new(200)
@@ -188,7 +188,7 @@ async fn extract_with_image() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .and(query_param("key", "key"))
+        .and(header("x-goog-api-key", "key"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(gemini_response(r#"{"name": "Cat", "email": null}"#)),
@@ -211,12 +211,12 @@ async fn extract_with_image() {
 }
 
 #[tokio::test]
-async fn gemini_auth_in_query_param() {
+async fn gemini_key_in_header_not_url() {
     let server = MockServer::start().await;
 
-    // only respond if key query param is present
+    // only respond if the key header is present
     Mock::given(method("POST"))
-        .and(query_param("key", "secret-api-key"))
+        .and(header("x-goog-api-key", "secret-api-key"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(gemini_response(r#"{"name": "Auth", "email": null}"#)),
@@ -228,4 +228,7 @@ async fn gemini_auth_in_query_param() {
     let client = Client::gemini_compatible("secret-api-key", server.uri());
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Auth");
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(!requests[0].url.as_str().contains("secret-api-key"));
 }

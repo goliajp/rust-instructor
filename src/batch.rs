@@ -7,9 +7,9 @@ use serde::de::DeserializeOwned;
 use crate::backoff::BackoffConfig;
 use crate::client::{Client, ExtractResult};
 use crate::error::Result;
+use crate::extract::ValidatorFn;
+use crate::reasoning::Reasoning;
 use crate::validate::ValidationError;
-
-type ValidatorFn<T> = Box<dyn Fn(&T) -> std::result::Result<(), ValidationError> + Send + Sync>;
 
 /// Builder for concurrent batch extraction.
 ///
@@ -21,8 +21,9 @@ pub struct BatchBuilder<'a, T> {
     model: Option<String>,
     system: Option<String>,
     temperature: Option<f64>,
-    max_tokens: u32,
+    max_tokens: Option<u32>,
     max_retries: u32,
+    reasoning: Option<Reasoning>,
     concurrency: usize,
     backoff: Option<BackoffConfig>,
     timeout: Duration,
@@ -43,6 +44,7 @@ where
             temperature: client.default_temperature,
             max_tokens: client.default_max_tokens,
             max_retries: client.default_max_retries,
+            reasoning: client.default_reasoning,
             concurrency: 5,
             backoff: client.default_backoff.clone(),
             timeout: client.default_timeout,
@@ -83,7 +85,15 @@ where
     /// Set max output tokens for each extraction.
     pub fn max_tokens(self, tokens: u32) -> Self {
         Self {
-            max_tokens: tokens,
+            max_tokens: Some(tokens),
+            ..self
+        }
+    }
+
+    /// Set the reasoning level for each extraction. See [`Reasoning`].
+    pub fn reasoning(self, reasoning: Reasoning) -> Self {
+        Self {
+            reasoning: Some(reasoning),
             ..self
         }
     }
@@ -106,7 +116,7 @@ where
         }
     }
 
-    /// Enable exponential backoff for retryable HTTP errors (429, 503).
+    /// Enable exponential backoff for retryable HTTP errors.
     pub fn retry_backoff(self, config: BackoffConfig) -> Self {
         Self {
             backoff: Some(config),
@@ -142,6 +152,7 @@ where
         let temperature = self.temperature;
         let max_tokens = self.max_tokens;
         let max_retries = self.max_retries;
+        let reasoning = self.reasoning;
         let backoff = self.backoff;
         let timeout = self.timeout;
         let validator = self.validator.map(std::sync::Arc::new);
@@ -171,10 +182,13 @@ where
                     if let Some(t) = temperature {
                         builder = builder.temperature(t);
                     }
-                    builder = builder
-                        .max_tokens(max_tokens)
-                        .max_retries(max_retries)
-                        .timeout(timeout);
+                    if let Some(n) = max_tokens {
+                        builder = builder.max_tokens(n);
+                    }
+                    if let Some(r) = reasoning {
+                        builder = builder.reasoning(r);
+                    }
+                    builder = builder.max_retries(max_retries).timeout(timeout);
                     if let Some(b) = backoff {
                         builder = builder.retry_backoff(b);
                     }
@@ -204,6 +218,7 @@ mod tests {
             .with_max_retries(5)
             .with_max_tokens(2048);
 
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -212,7 +227,7 @@ mod tests {
         let builder = BatchBuilder::<D>::new(&client, vec!["a".into(), "b".into()]);
         assert_eq!(builder.concurrency, 5);
         assert_eq!(builder.max_retries, 5);
-        assert_eq!(builder.max_tokens, 2048);
+        assert_eq!(builder.max_tokens, Some(2048));
         assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(builder.system.as_deref(), Some("extract data"));
         assert_eq!(builder.temperature, Some(0.5));
@@ -224,6 +239,7 @@ mod tests {
     fn builder_defaults_without_client_overrides() {
         let client = Client::openai("key");
 
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -232,7 +248,7 @@ mod tests {
         let builder = BatchBuilder::<D>::new(&client, vec!["a".into()]);
         // inherits client defaults
         assert_eq!(builder.max_retries, 2);
-        assert_eq!(builder.max_tokens, 16384);
+        assert_eq!(builder.max_tokens, None);
         assert_eq!(builder.temperature, Some(0.0));
         assert!(builder.model.is_none());
         assert!(builder.system.is_none());
@@ -242,6 +258,7 @@ mod tests {
     fn builder_overrides() {
         let client = Client::openai("key");
 
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -258,7 +275,7 @@ mod tests {
         assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(builder.system.as_deref(), Some("test"));
         assert_eq!(builder.temperature, Some(0.5));
-        assert_eq!(builder.max_tokens, 1024);
+        assert_eq!(builder.max_tokens, Some(1024));
         assert_eq!(builder.max_retries, 3);
         assert_eq!(builder.concurrency, 10);
     }
@@ -267,6 +284,7 @@ mod tests {
     fn concurrency_minimum_one() {
         let client = Client::openai("key");
 
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -282,6 +300,7 @@ mod tests {
             .with_retry_backoff(BackoffConfig::default())
             .with_timeout(Duration::from_secs(30));
 
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,

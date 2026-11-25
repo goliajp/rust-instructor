@@ -1,4 +1,4 @@
-//! Stream partial JSON as the LLM generates it.
+//! Watch the value fill in while the response streams.
 //!
 //! ```bash
 //! OPENAI_API_KEY=sk-... cargo run --example streaming
@@ -6,6 +6,7 @@
 
 use instructors::prelude::*;
 
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Summary {
     title: String,
@@ -22,8 +23,10 @@ async fn main() -> instructors::Result<()> {
             "Rust is a systems programming language focused on safety and performance.",
         )
         .model("gpt-5.6-luna")
-        .on_stream(|chunk| {
-            print!("{chunk}");
+        .on_partial(|v| {
+            let points = v.get("key_points").map_or(0, |p| p.len());
+            let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("");
+            println!("title so far: {title:?}, key points so far: {points}");
         })
         .await?;
 

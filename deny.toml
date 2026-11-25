@@ -22,8 +22,7 @@ confidence-threshold = 0.93
 [advisories]
 version = 2
 yanked = "deny"
-# 'unmaintained' flags transitives we can't remove (e.g. `paste` under
-# candle/tokenizers). Only gate on our own workspace members.
+# only fail on unmaintained crates this workspace depends on directly
 unmaintained = "workspace"
 
 [bans]

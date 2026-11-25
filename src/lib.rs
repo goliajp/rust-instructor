@@ -1,10 +1,11 @@
 //! # instructors
 //!
-//! Type-safe structured output extraction from LLMs.
+//! Typed structured output from LLMs.
 //!
-//! Define a Rust struct, and `instructors` will make the LLM return data that
-//! deserializes directly into it — with automatic schema generation, validation,
-//! and retry on failure.
+//! Derive `Deserialize` and `JsonSchema` on a Rust type and call
+//! [`Client::extract`]. The crate sends the type's JSON schema in the form
+//! each provider enforces, parses the answer into the type, and when parsing
+//! or your validation fails, sends the error back and asks again.
 //!
 //! ## Quick start
 //!
@@ -45,7 +46,6 @@
 //! # async fn run() -> instructors::Result<()> {
 //! let client = Client::openai("sk-...");
 //!
-//! // closure-based validation
 //! let user: User = client.extract("...")
 //!     .validate(|u: &User| {
 //!         if u.age > 150 { Err("age unrealistic".into()) } else { Ok(()) }
@@ -55,40 +55,49 @@
 //! # }
 //! ```
 //!
-//! ## Features
+//! ## What is in the crate
 //!
-//! - **Multi-provider** — OpenAI (`response_format` strict), Anthropic (forced
-//!   `tool_use`, or native `output_config` via
-//!   [`Client::with_anthropic_structured_output`]), Google Gemini
-//!   (`response_schema`), plus any compatible API
-//! - **List extraction** — `extract_many::<T>()` returns `Vec<T>`
-//! - **Batch processing** — `extract_batch::<T>()` with configurable concurrency
-//! - **Multi-turn** — `.messages()` for conversation history
-//! - **Validation** — closure-based `.validate()` or trait-based `.validated()`
-//! - **Lifecycle hooks** — `.on_request()` / `.on_response()`
-//! - **Streaming** — SSE streaming via `.on_stream()` callback
-//! - **Images** — `.image()` / `.images()` for vision models
-//! - **Provider fallback** — `.with_fallback()` for auto-failover
-//! - **JSON repair** — automatic repair of malformed LLM output (trailing commas, single quotes, etc.) before retry
-//! - **Retry backoff** — exponential backoff on 429/503 via `.retry_backoff()`
-//! - **Request timeout** — overall timeout via `.timeout()`
-//! - **Cost tracking** — token counting and cost estimation via `tiktoken` (optional)
-//! - **Tracing** — structured logging via `tracing` (optional feature)
+//! - Three wire protocols: OpenAI Chat Completions (`response_format` with a
+//!   strict schema), Anthropic Messages (`output_config.format`, or a tool),
+//!   Gemini `generateContent` (`responseSchema`); each also works against a
+//!   compatible server through the `_compatible` constructors
+//! - [`Reasoning`]: one setting for thinking effort or budget, mapped to each
+//!   provider's parameter
+//! - [`ExtractBuilder::on_partial`]: the value parsed so far after every
+//!   streamed delta, from the incremental parser in [`partial`]
+//! - [`Client::extract_many`] for lists, [`Client::extract_batch`] for many
+//!   prompts with bounded concurrency
+//! - validation by closure or the [`Validate`] trait, with the error sent back
+//!   to the model on retry
+//! - repair of malformed JSON (trailing commas, single quotes, markdown
+//!   fences) before a retry is spent
+//! - fallback providers, HTTP backoff, an overall timeout, request and
+//!   response hooks, image input
+//! - token counts and cost estimates through `tiktoken` (feature
+//!   `cost-tracking`, on by default); `tracing` spans (feature `tracing`)
 
 mod backoff;
 mod batch;
 mod client;
 mod error;
+mod extract;
+pub mod partial;
 mod provider;
+mod reasoning;
+mod run;
 mod schema;
+mod sse;
 mod usage;
 mod validate;
 
 pub use backoff::BackoffConfig;
 pub use batch::BatchBuilder;
-pub use client::{Client, ExtractBuilder, ExtractResult};
+pub use client::{Client, ExtractResult};
 pub use error::{Error, Result};
+pub use extract::ExtractBuilder;
+pub use partial::PartialValue;
 pub use provider::{ImageInput, Message};
+pub use reasoning::{Effort, Reasoning};
 pub use usage::Usage;
 pub use validate::{Validate, ValidationError};
 
@@ -103,8 +112,8 @@ pub use serde;
 /// ```
 pub mod prelude {
     pub use crate::{
-        BackoffConfig, BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate,
-        ValidationError,
+        BackoffConfig, BatchBuilder, Client, Effort, ExtractResult, ImageInput, Message,
+        PartialValue, Reasoning, Usage, Validate, ValidationError,
     };
     pub use schemars::JsonSchema;
     pub use serde::Deserialize;
@@ -122,6 +131,7 @@ mod tests {
         age: u32,
     }
 
+    #[expect(dead_code, reason = "fields are only filled by deserialization")]
     #[derive(Debug, Deserialize, JsonSchema)]
     struct WithOptional {
         title: String,
