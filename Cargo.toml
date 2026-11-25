@@ -40,6 +40,8 @@ fuzzing = []
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 criterion = "0.8"
+# compared against in the json benchmark only
+jsonrepair = "0.1"
 
 [[bench]]
 name = "schema"

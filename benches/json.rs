@@ -330,6 +330,41 @@ fn main() {
         });
     }
 
+    if on("repair") {
+        println!("\n# repair (input -> repaired text)");
+        let trailing = content.replace("}]", "},]").replacen('}', ",}", 1);
+        let single = content.replace('"', "'");
+        let fenced = format!("Here is the JSON:\n```json\n{content}\n```\n");
+        let truncated = content[..content.floor_char_boundary(content.len() * 2 / 3)].to_string();
+        let inputs = [
+            ("valid", content.clone()),
+            ("trailing_commas", trailing),
+            ("single_quotes", single),
+            ("markdown_fence", fenced),
+            ("truncated_2/3", truncated),
+        ];
+        let opts = jsonrepair::Options::default();
+        for (name, input) in &inputs {
+            let theirs = jsonrepair::repair_json(input, &opts).ok();
+            let mine = ours::json_repair(input).map(|r| r.text.into_owned());
+            let parses = |s: &Option<String>| {
+                s.as_deref()
+                    .is_some_and(|t| serde_json::from_str::<Invoice>(t).is_ok())
+            };
+            println!(
+                "  {name}: parses into Invoice after repair: jsonrepair={} ours={}",
+                parses(&theirs),
+                parses(&mine)
+            );
+            bench(&format!("jsonrepair 0.1 {name}"), 5000, rounds, || {
+                black_box(jsonrepair::repair_json(black_box(input), &opts).ok());
+            });
+            bench(&format!("ours           {name}"), 5000, rounds, || {
+                black_box(ours::json_repair(black_box(input)));
+            });
+        }
+    }
+
     if on("write") {
         let unit =
             "Contact \"John\" at john@example.com.\nNotes:\ttab, back\\slash, 東京 and more. ";

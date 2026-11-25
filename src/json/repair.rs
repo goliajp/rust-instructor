@@ -38,6 +38,22 @@ pub(crate) fn repair(s: &str) -> Option<Repaired<'_>> {
             .position(|&c| c == b'{' || c == b'[')
             .unwrap_or(first),
     };
+    // prose or a fence around an otherwise valid value
+    if start > 0
+        && let Some(close) = match b[start] {
+            b'{' => Some(b'}'),
+            b'[' => Some(b']'),
+            _ => None,
+        }
+        && let Some(end) = b.iter().rposition(|&c| c == close)
+        && end > start
+        && super::is_valid(&s[start..=end])
+    {
+        return Some(Repaired {
+            text: Cow::Borrowed(&s[start..=end]),
+            cut: false,
+        });
+    }
     let mut r = Repairer {
         s,
         b,

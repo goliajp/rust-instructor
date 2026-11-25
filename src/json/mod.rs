@@ -128,7 +128,8 @@ pub(crate) fn from_str<'de, T: Deserialize<'de>>(s: &'de str) -> Result<T, JsonE
 /// True when `s` is one JSON value that serde_json would accept, with
 /// optional surrounding whitespace.
 pub(crate) fn is_valid(s: &str) -> bool {
-    from_str::<de::Strict>(s).is_ok()
+    let mut sc = scan::Scanner::new(s.as_bytes());
+    sc.validate().is_ok() && sc.ws().is_none()
 }
 
 /// The text of one JSON value, borrowed from the input without parsing it

@@ -4,7 +4,6 @@ use serde::de::{self, Expected, Unexpected, Visitor};
 
 mod access;
 
-pub(crate) use access::Strict;
 use access::{Map, Seq, UnitVariant, VariantMap};
 
 use super::JsonError;

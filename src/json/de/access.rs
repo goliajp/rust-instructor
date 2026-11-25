@@ -1,5 +1,5 @@
 //! Access types the deserializer hands to visitors: sequences, maps,
-//! enum variants, object keys, and a validating sink.
+//! enum variants and object keys.
 
 use serde::de::{
     self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, Unexpected, VariantAccess, Visitor,
@@ -257,52 +257,5 @@ impl<'a> de::Deserializer<'a> for MapKey<'_, 'a> {
         <W: Visitor<'a>>
         char str string unit unit_struct seq tuple tuple_struct map struct
         identifier ignored_any
-    }
-}
-
-/// Accepts any value; used to check that text is JSON serde_json would
-/// accept (numbers in range, surrogates paired, depth limit).
-pub(crate) struct Strict;
-
-impl<'de> de::Deserialize<'de> for Strict {
-    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        d.deserialize_any(StrictVisitor)
-    }
-}
-
-struct StrictVisitor;
-
-impl<'de> Visitor<'de> for StrictVisitor {
-    type Value = Strict;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("any JSON value")
-    }
-
-    fn visit_bool<E>(self, _: bool) -> Result<Strict, E> {
-        Ok(Strict)
-    }
-    fn visit_i64<E>(self, _: i64) -> Result<Strict, E> {
-        Ok(Strict)
-    }
-    fn visit_u64<E>(self, _: u64) -> Result<Strict, E> {
-        Ok(Strict)
-    }
-    fn visit_f64<E>(self, _: f64) -> Result<Strict, E> {
-        Ok(Strict)
-    }
-    fn visit_str<E>(self, _: &str) -> Result<Strict, E> {
-        Ok(Strict)
-    }
-    fn visit_unit<E>(self) -> Result<Strict, E> {
-        Ok(Strict)
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Strict, A::Error> {
-        while a.next_element::<Strict>()?.is_some() {}
-        Ok(Strict)
-    }
-    fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<Strict, A::Error> {
-        while a.next_entry::<de::IgnoredAny, Strict>()?.is_some() {}
-        Ok(Strict)
     }
 }

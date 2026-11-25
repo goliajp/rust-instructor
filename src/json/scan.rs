@@ -227,9 +227,9 @@ impl<'a> Scanner<'a> {
         Ok(())
     }
 
-    /// Skip a string whose opening quote was consumed, checking escapes
-    /// but not surrogate pairing.
-    pub(crate) fn skip_str(&mut self) -> Result<(), JsonError> {
+    /// Skip a string whose opening quote was consumed, checking escapes;
+    /// `strict` also checks surrogate pairing.
+    pub(crate) fn skip_str(&mut self, strict: bool) -> Result<(), JsonError> {
         loop {
             let stop = find_stop(self.b, self.i);
             self.i = stop;
@@ -245,7 +245,10 @@ impl<'a> Scanner<'a> {
                         None => return Err(self.err("EOF while parsing a string")),
                         Some(b'u') => {
                             self.i += 1;
-                            self.hex4()?;
+                            let n = self.hex4()?;
+                            if strict && (0xD800..=0xDFFF).contains(&n) {
+                                self.surrogate(n)?;
+                            }
                         }
                         Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => self.i += 1,
                         Some(_) => {
@@ -259,6 +262,22 @@ impl<'a> Scanner<'a> {
                         .err("control character (\\u0000-\\u001F) found while parsing a string"));
                 }
             }
+        }
+    }
+
+    // the low half after a high surrogate `n`
+    #[cold]
+    fn surrogate(&mut self, n: u16) -> Result<(), JsonError> {
+        if n >= 0xDC00 {
+            return Err(self.err("lone leading surrogate in hex escape"));
+        }
+        if self.b.get(self.i..self.i + 2) != Some(b"\\u") {
+            return Err(self.err("unexpected end of hex escape"));
+        }
+        self.i += 2;
+        match self.hex4()? {
+            0xDC00..=0xDFFF => Ok(()),
+            _ => Err(self.err("lone leading surrogate in hex escape")),
         }
     }
 
@@ -348,6 +367,16 @@ impl<'a> Scanner<'a> {
     /// Skip one value of any kind, nested containers included, without
     /// building anything. No depth limit: containers are tracked on a stack.
     pub(crate) fn skip_value(&mut self) -> Result<(), JsonError> {
+        self.skip_value_with(false)
+    }
+
+    /// Check one value the way serde_json reads it into a tree: numbers in
+    /// range, surrogates paired, at most 127 levels of nesting.
+    pub(crate) fn validate(&mut self) -> Result<(), JsonError> {
+        self.skip_value_with(true)
+    }
+
+    fn skip_value_with(&mut self, strict: bool) -> Result<(), JsonError> {
         let mut stack: Vec<u8> = Vec::new();
         loop {
             // a value
@@ -355,7 +384,10 @@ impl<'a> Scanner<'a> {
                 None => return Err(self.err("EOF while parsing a value")),
                 Some(b'"') => {
                     self.i += 1;
-                    self.skip_str()?;
+                    self.skip_str(strict)?;
+                }
+                Some(b'-' | b'0'..=b'9') if strict => {
+                    self.parse_number()?;
                 }
                 Some(b'-' | b'0'..=b'9') => {
                     self.skip_number()?;
@@ -373,6 +405,9 @@ impl<'a> Scanner<'a> {
                     self.expect_ident(b"ull")?;
                 }
                 Some(open @ (b'[' | b'{')) => {
+                    if strict && stack.len() >= 127 {
+                        return Err(self.err("recursion limit exceeded"));
+                    }
                     self.i += 1;
                     let close = if open == b'[' { b']' } else { b'}' };
                     if self.ws() == Some(close) {
@@ -380,7 +415,7 @@ impl<'a> Scanner<'a> {
                     } else {
                         stack.push(open);
                         if open == b'{' {
-                            self.skip_key()?;
+                            self.skip_key(strict)?;
                         }
                         continue;
                     }
@@ -396,7 +431,7 @@ impl<'a> Scanner<'a> {
                     Some(b',') => {
                         self.i += 1;
                         if top == b'{' {
-                            self.skip_key()?;
+                            self.skip_key(strict)?;
                         }
                         break;
                     }
@@ -428,11 +463,11 @@ impl<'a> Scanner<'a> {
     }
 
     // `"key" :` inside an object
-    fn skip_key(&mut self) -> Result<(), JsonError> {
+    fn skip_key(&mut self, strict: bool) -> Result<(), JsonError> {
         match self.ws() {
             Some(b'"') => {
                 self.i += 1;
-                self.skip_str()?;
+                self.skip_str(strict)?;
             }
             None => return Err(self.err("EOF while parsing an object")),
             Some(_) => return Err(self.err("key must be a string")),
