@@ -6,7 +6,7 @@
 
 use instructors::prelude::*;
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Invoice {
     vendor: String,

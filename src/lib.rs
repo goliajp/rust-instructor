@@ -131,7 +131,7 @@ mod tests {
         age: u32,
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "fields are only filled by deserialization")]
     #[derive(Debug, Deserialize, JsonSchema)]
     struct WithOptional {
         title: String,

@@ -8,14 +8,20 @@ use std::sync::{Mutex, OnceLock};
 
 // test structs of varying complexity
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "the benches only build the schema; fields are never read"
+)]
 #[derive(Deserialize, JsonSchema)]
 struct Simple {
     name: String,
     age: u32,
 }
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "the benches only build the schema; fields are never read"
+)]
 #[derive(Deserialize, JsonSchema)]
 struct Medium {
     name: String,
@@ -26,7 +32,10 @@ struct Medium {
     tags: Vec<String>,
 }
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "the benches only build the schema; fields are never read"
+)]
 #[derive(Deserialize, JsonSchema)]
 struct Address {
     street: String,
@@ -36,7 +45,10 @@ struct Address {
     country: String,
 }
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "the benches only build the schema; fields are never read"
+)]
 #[derive(Deserialize, JsonSchema)]
 struct Complex {
     first_name: String,

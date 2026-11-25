@@ -25,7 +25,7 @@ struct Doc {
     root: Node,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Article {
     title: String,
@@ -294,7 +294,7 @@ async fn anthropic_refusal_stop_reason() {
 #[tokio::test]
 async fn anthropic_structured_output_strips_unsupported_keywords() {
     #[derive(Deserialize, JsonSchema)]
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "fields are only filled by deserialization")]
     struct Item {
         qty: u32,
         price: f64,

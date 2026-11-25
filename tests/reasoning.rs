@@ -164,7 +164,7 @@ fn delta_events(content: &str, size: usize) -> Vec<Vec<u8>> {
 
 #[tokio::test]
 async fn on_partial_sees_the_value_grow() {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "fields are only filled by deserialization")]
     #[derive(Debug, Deserialize, JsonSchema)]
     struct Article {
         title: String,

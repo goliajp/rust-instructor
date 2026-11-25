@@ -2,56 +2,56 @@ use super::*;
 use schemars::JsonSchema;
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 struct Simple {
     name: String,
     age: u32,
 }
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 struct WithOption {
     name: String,
     email: Option<String>,
 }
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 struct Nested {
     contact: Simple,
     tags: Vec<String>,
 }
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 struct Node {
     name: String,
     children: Vec<Node>,
 }
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 struct Doc {
     title: String,
     root: Node,
 }
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 struct Article {
     title: String,
     format: String,
 }
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 enum Shape {
     Circle { r: f64 },
     Square { side: f64 },
 }
 
 #[derive(JsonSchema)]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 struct Drawing {
     shape: Shape,
 }

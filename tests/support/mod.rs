@@ -1,6 +1,7 @@
 // A loopback HTTP server that records request bodies and writes each reply
 // in separate chunks with a pause in between, so the client sees one network
 // read per chunk.
+// each test crate uses a different subset of these helpers
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};

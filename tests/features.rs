@@ -7,14 +7,14 @@ use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Contact {
     name: String,
     email: Option<String>,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Entity {
     name: String,
@@ -26,7 +26,7 @@ struct Summary {
     text: String,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, JsonSchema)]
 enum Sentiment {
     Positive,

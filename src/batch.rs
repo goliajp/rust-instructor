@@ -218,7 +218,7 @@ mod tests {
             .with_max_retries(5)
             .with_max_tokens(2048);
 
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -239,7 +239,7 @@ mod tests {
     fn builder_defaults_without_client_overrides() {
         let client = Client::openai("key");
 
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -258,7 +258,7 @@ mod tests {
     fn builder_overrides() {
         let client = Client::openai("key");
 
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -284,7 +284,7 @@ mod tests {
     fn concurrency_minimum_one() {
         let client = Client::openai("key");
 
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
@@ -300,7 +300,7 @@ mod tests {
             .with_retry_backoff(BackoffConfig::default())
             .with_timeout(Duration::from_secs(30));
 
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "fields are only filled by deserialization")]
         #[derive(serde::Deserialize, JsonSchema)]
         struct D {
             x: i32,
