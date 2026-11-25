@@ -1,6 +1,8 @@
 use std::sync::{Mutex, OnceLock};
 
-use super::lower::{self, J};
+use super::dialect;
+use super::lower;
+use super::tree::J;
 use super::{Schema, Shape, lock};
 
 /// The schema dialects the request builders splice into bodies.
@@ -70,7 +72,7 @@ impl SchemaEntry {
 
     /// Serialized schema for `dialect`, built on first call.
     pub(crate) fn get(&self, dialect: Dialect) -> &str {
-        self.built[dialect as usize].get_or_init(|| lower::build(&self.base, dialect))
+        self.built[dialect as usize].get_or_init(|| dialect::build(&self.base, dialect))
     }
 }
 

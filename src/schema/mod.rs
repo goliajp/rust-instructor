@@ -6,8 +6,10 @@
 //! per type and cached next to the shape.
 
 mod cache;
+mod dialect;
 mod impls;
 mod lower;
+mod tree;
 
 use std::sync::{Mutex, OnceLock};
 
