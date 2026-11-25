@@ -7,12 +7,12 @@ use super::scan::find_stop;
 
 /// The result of [`repair`].
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Repaired<'a> {
+pub struct Repaired<'a> {
     /// The input when it needed no change, else the repaired text.
-    pub(crate) text: Cow<'a, str>,
+    pub text: Cow<'a, str>,
     /// The input ended inside a value; open strings and containers were
     /// closed and an unfinished key or number was dropped.
-    pub(crate) cut: bool,
+    pub cut: bool,
 }
 
 const MAX_DEPTH: usize = 128;

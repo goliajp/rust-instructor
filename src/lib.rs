@@ -78,6 +78,10 @@
 //! - schema properties in declaration order instead of alphabetical (feature
 //!   `preserve-order`, which turns on `serde_json/preserve_order`)
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+#[path = "private_api.rs"]
+pub mod __private;
 mod backoff;
 mod batch;
 mod client;

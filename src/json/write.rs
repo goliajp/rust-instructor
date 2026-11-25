@@ -80,6 +80,13 @@ pub(crate) fn write_str(out: &mut Vec<u8>, s: &str) {
     out.push(b'"');
 }
 
+#[cfg_attr(
+    not(any(test, feature = "fuzzing")),
+    expect(
+        dead_code,
+        reason = "callers move to this module with the dialect rewrite"
+    )
+)]
 static DIGITS2: &[u8; 200] = b"\
 0001020304050607080910111213141516171819\
 2021222324252627282930313233343536373839\
@@ -88,6 +95,13 @@ static DIGITS2: &[u8; 200] = b"\
 8081828384858687888990919293949596979899";
 
 /// Append an unsigned integer in decimal.
+#[cfg_attr(
+    not(any(test, feature = "fuzzing")),
+    expect(
+        dead_code,
+        reason = "callers move to this module with the dialect rewrite"
+    )
+)]
 #[inline]
 pub(crate) fn write_u64(out: &mut Vec<u8>, mut n: u64) {
     let mut buf = [0u8; 20];

@@ -209,7 +209,7 @@ enum Adjacent {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-struct Doc {
+pub(super) struct Doc {
     id: u64,
     neg: i32,
     name: String,
@@ -284,7 +284,7 @@ pub(super) fn sample_doc(seed: u64) -> Doc {
             Loose::List(vec![true, false]),
         ],
         extra: Extra {
-            note: if r.next() % 2 == 0 {
+            note: if r.next().is_multiple_of(2) {
                 Some(r.string())
             } else {
                 None

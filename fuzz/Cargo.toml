@@ -1,0 +1,53 @@
+[package]
+name = "instructors-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+instructors = { path = "..", default-features = false, features = ["fuzzing"] }
+serde = { version = "1", features = ["derive"] }
+# exact float parsing, so values compare bit for bit
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "json_de"
+path = "fuzz_targets/json_de.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_write"
+path = "fuzz_targets/json_write.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repair"
+path = "fuzz_targets/repair.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sse_split"
+path = "fuzz_targets/sse_split.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "partial_feed"
+path = "fuzz_targets/partial_feed.rs"
+test = false
+doc = false
+bench = false

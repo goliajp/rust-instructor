@@ -13,8 +13,17 @@ use std::fmt;
 
 use serde::de::{Deserialize, Deserializer, Visitor};
 
-pub(crate) use repair::{Repaired, repair};
-pub(crate) use write::{write_f64, write_str, write_u64};
+pub use repair::Repaired;
+pub(crate) use repair::repair;
+#[cfg_attr(
+    not(any(test, feature = "fuzzing")),
+    expect(
+        unused_imports,
+        reason = "callers move to this module with the dialect rewrite"
+    )
+)]
+pub(crate) use write::write_u64;
+pub(crate) use write::{write_f64, write_str};
 
 /// A JSON syntax or data error, with the line and column where it was
 /// found.
@@ -92,6 +101,13 @@ impl serde::de::Error for JsonError {
 
 /// Deserialize `T` from JSON bytes. Trailing whitespace is allowed, any
 /// other trailing text is an error.
+#[cfg_attr(
+    not(any(test, feature = "fuzzing")),
+    expect(
+        dead_code,
+        reason = "callers move to this module with the dialect rewrite"
+    )
+)]
 pub(crate) fn from_slice<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, JsonError> {
     match std::str::from_utf8(bytes) {
         Ok(s) => from_str(s),
@@ -117,8 +133,15 @@ pub(crate) fn is_valid(s: &str) -> bool {
 
 /// The text of one JSON value, borrowed from the input without parsing it
 /// into a tree. Only this module's deserializer can produce it.
+#[cfg_attr(
+    not(any(test, feature = "fuzzing")),
+    expect(
+        dead_code,
+        reason = "callers move to this module with the dialect rewrite"
+    )
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Raw<'a>(pub(crate) &'a str);
+pub struct Raw<'a>(pub &'a str);
 
 impl<'de: 'a, 'a> Deserialize<'de> for Raw<'a> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {

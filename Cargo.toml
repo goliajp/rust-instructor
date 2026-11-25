@@ -10,6 +10,7 @@ documentation = "https://docs.rs/instructors"
 keywords = ["llm", "structured-output", "openai", "anthropic", "gemini"]
 categories = ["api-bindings", "asynchronous", "parser-implementations"]
 readme = "README.md"
+exclude = ["fuzz"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +33,8 @@ tracing = ["dep:tracing"]
 # schema properties in declaration order; turns on `serde_json/preserve_order`
 # for every crate in the build
 preserve-order = ["schemars/preserve_order"]
+# internals for the fuzz targets and the json benchmark; not a public API
+fuzzing = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -42,6 +45,12 @@ criterion = "0.8"
 name = "schema"
 harness = false
 
+[[bench]]
+name = "json"
+harness = false
+required-features = ["fuzzing"]
+
 [profile.release]
 lto = true
 codegen-units = 1
+
