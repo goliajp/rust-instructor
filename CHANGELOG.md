@@ -1,5 +1,96 @@
 # Changelog
 
+## Unreleased
+
+### Upgrading from 1.4
+
+No public item was removed or changed, so code that compiled against 1.4
+compiles against this release. Four requests change on the wire:
+
+- `Client::anthropic` sends the schema as structured output
+  (`output_config.format`) instead of a forced tool call. Claude Opus 5.5,
+  Sonnet 5.5, Fable 5.1 and later reject forced tool calls with a 400, and
+  structured output is available on every current Claude model. To send the
+  1.4 request, call `.with_anthropic_tool_use()`. `anthropic_compatible` keeps
+  the forced tool call by default, since compatible servers support it more
+  widely.
+- `extract_many` asks for `{"items": [...]}` instead of a bare array, because
+  OpenAI strict mode and Anthropic tools need an object at the root. A bare
+  array in the answer is still accepted.
+- `with_max_tokens` / `.max_tokens()` now reach OpenAI (as
+  `max_completion_tokens`) and OpenAI-compatible APIs (as `max_tokens`).
+  1.4 never sent them. When unset, nothing is sent, as before.
+- The Gemini API key is sent in the `x-goog-api-key` header instead of the
+  `key` query parameter. A proxy that only reads the query parameter needs to
+  read the header.
+
+Behaviour that changes without a code change:
+
+- A refusal (OpenAI `refusal`, Anthropic `stop_reason: refusal`, Gemini
+  safety stops) and an answer cut off by the token limit are returned at once
+  instead of being retried. Check them with `Error::refusal()` and
+  `Error::is_truncated()`.
+- A fallback client uses its own default model instead of the primary's, and
+  the error after all providers fail lists every provider's error.
+- Gemini thinking tokens are counted in `usage.output_tokens` and the cost.
+- `tiktoken` 5.4 carries the November 2026 price table, so `usage.cost` values
+  differ from 1.4 for some models.
+
+### Added
+
+- `Reasoning` (`Effort(Effort)`, `Budget(u32)`, `Off`), set with
+  `Client::with_reasoning`, `ExtractBuilder::reasoning` and
+  `BatchBuilder::reasoning`, and mapped to each provider's parameter: OpenAI
+  `reasoning_effort`, Anthropic `thinking` and `output_config.effort`, Gemini
+  `thinkingConfig`, and the DeepSeek, Qwen, Kimi and GLM parameters. Nothing is
+  sent unless it is set. Requested in #5; #6, #7 and #8 by Leopard2A5
+  implemented the Gemini part first.
+- `ExtractBuilder::on_partial`: the JSON parsed so far after each streamed
+  delta, as a borrowed `PartialValue`. The `partial` module exposes the
+  incremental parser behind it.
+- `Error::refusal()` and `Error::is_truncated()`.
+- `Client::with_anthropic_tool_use()` to send the schema as a forced tool call.
+- `openai_compatible` recognizes DeepSeek, Qwen, Kimi and GLM by their base
+  URL host for the reasoning parameters.
+
+### Fixed
+
+- A type containing a recursive type (`struct Doc { root: Node }` with
+  `Node { children: Vec<Node> }`) overflowed the stack while the schema was
+  prepared. Recursive types are now sent with `$defs`; Anthropic gets a tool
+  for them and Gemini `responseJsonSchema`, since their other schema forms
+  cannot express recursion.
+- A field named `title` or `format` was removed from the schema sent to
+  OpenAI and Gemini, so the model was never asked for it.
+- `max_tokens` was never sent to OpenAI-family APIs.
+- `extract_many` sent a root `array` schema with `strict: true`, which OpenAI
+  rejects.
+- Streaming replaced a multi-byte UTF-8 character split across two network
+  reads with U+FFFD. The SSE decoder now works on bytes.
+- OpenAI streaming reported 0 tokens and no cost, because
+  `stream_options.include_usage` was not sent.
+- A fallback was sent the primary's model id, and the fallback's error was
+  dropped.
+- Gemini thinking tokens (`thoughtsTokenCount`) were not counted, and only
+  the first response part was read; thought parts are now skipped and the
+  other parts joined.
+- The Gemini API key was part of the request URL, so it could appear in
+  error messages.
+- An OpenAI refusal (`content: null`) surfaced as a body decode error.
+- Anthropic structured output received keywords it rejects (`minimum`,
+  `maxLength`, unsupported `format` values, `oneOf`).
+- Cost was computed on tokens summed over all attempts; it is now priced per
+  request and summed, so a long-context price tier applies per request.
+- HTTP backoff, when configured, also retries 500, 502, 504 and 529.
+
+### Changed
+
+- The provider-ready schema is built once per type and kept as serialized
+  bytes, so a request copies it instead of transforming it.
+- All clients share one HTTP connection pool.
+- `tiktoken` 5.1 to 5.4.
+- Licence: MIT or Apache-2.0, at your option (was MIT).
+
 ## [1.4.1] - 2026-08-13
 
 Documentation only. No code changes.

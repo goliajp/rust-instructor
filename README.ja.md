@@ -1,431 +1,260 @@
 # instructors
 
-[![Crates.io](https://img.shields.io/crates/v/instructors?style=flat-square&logo=rust)](https://crates.io/crates/instructors)
+[![crates.io](https://img.shields.io/crates/v/instructors?style=flat-square&logo=rust)](https://crates.io/crates/instructors)
 [![docs.rs](https://img.shields.io/docsrs/instructors?style=flat-square&logo=docs.rs)](https://docs.rs/instructors)
-[![License](https://img.shields.io/crates/l/instructors?style=flat-square)](LICENSE)
-[![Downloads](https://img.shields.io/crates/d/instructors?style=flat-square)](https://crates.io/crates/instructors)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
+[![CI](https://img.shields.io/github/actions/workflow/status/goliajp/rust-instructor/ci.yml?branch=develop&style=flat-square&logo=github&label=ci)](https://github.com/goliajp/rust-instructor/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/instructors?style=flat-square)](#ライセンス)
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
-LLM からの型安全な構造化出力抽出ライブラリ。Rust 版 [instructor](https://github.com/jxnl/instructor)。
+> **1.5 に上げる場合**：API は追加のみですが、送信するリクエストが 4 か所変わります。`Client::anthropic` はスキーマを強制ツール呼び出しではなく構造化出力（`output_config.format`）で送ります。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 以降は強制ツール呼び出しを拒否するためです。以前のリクエストに戻すには `.with_anthropic_tool_use()` を呼びます。`extract_many` は配列そのものではなく `{"items": [...]}` を求めます。最大出力トークン数の設定が OpenAI 系の API にも送られるようになりました。Gemini の API キーは URL ではなく `x-goog-api-key` ヘッダーで送ります。詳細は [CHANGELOG](CHANGELOG.md#unreleased) を参照してください。
 
-Rust の構造体を定義 → instructors が JSON Schema を生成 → LLM が有効な JSON を返却 → 型付きの値を取得。自動バリデーションとリトライ機能付き。
+LLM から型付きの構造化出力を受け取る Rust のライブラリです。型に `Deserialize` と `JsonSchema` を derive して `extract` を呼ぶと、その型の値が返ります。各プロバイダーが強制できる形で型の JSON スキーマを送り、壊れた JSON は修復し、パースや独自の検証に失敗したときはエラーをモデルに返して再度尋ねます。設計は Python の [instructor](https://github.com/567-labs/instructor) にならっています。
 
-## ハイライト
-
-- **6 プロバイダー** — OpenAI、Anthropic、Gemini、DeepSeek、Together、任意の OpenAI/Anthropic/Gemini 互換 API
-- **バリデーション + リトライ** — 無効な出力はエラー詳細と共に LLM にフィードバックされ、自動修正
-- **JSON 自動修復** — 末尾カンマ、シングルクォート、Markdown フェンスをリトライ前に修復し、トークンとレイテンシを節約
-- **プロバイダーフォールバック** — 複数プロバイダーをチェーンして自動フェイルオーバー
-- **ストリーミング** — 部分的な JSON トークンをリアルタイム受信（OpenAI、Anthropic、Gemini）
-- **バッチ + 並行処理** — `Semaphore` による並行数制御で数百のプロンプトを処理
-- **ビジョン** — 画像から構造化データを抽出（URL または base64）
-- **コスト追跡** — [tiktoken](https://crates.io/crates/tiktoken) によるリクエストごとのトークンカウントとコスト推定
-
-## なぜ instructors？
-
-| 観点 | 生 API + serde | instructors |
-|---|---|---|
-| スキーマ強制 | JSON Schema を手書き | `#[derive(JsonSchema)]` から自動生成 |
-| パース失敗 | クラッシュまたはデータ損失 | エラーフィードバック付き自動リトライ |
-| 不正な JSON | アプリケーションエラー | デシリアライズ前に自動修復 |
-| 複数プロバイダー | プロバイダーごとに書き直し | 統一インターフェース、1 行で切替 |
-| バリデーション | パース後に手動 if/else | `.validate()` で LLM 対応リトライ |
-| コスト追跡 | トークンを自分で計算 | tiktoken による組み込みサポート |
+8 行の明細を持つ請求書をループバックで計測したところ、`extract` 1 回あたりのクライアント側 CPU 時間は、同じリクエストを `reqwest` で直接送る場合より 2.3 µs 多いだけでした。rstructor 0.6.0 は 25.1 µs、rig-core 0.47.1 は 28.4 µs 多くかかります。1.2 KB の回答が 308 回に分かれてストリーミングされる場合、届くたびに途中の値を取り出す処理の合計は 5.5 µs で、rstructor が使っている「届くたびにバッファ全体を解析し直す」方式では 677 µs かかります。条件と全データは[性能](#性能)にあります。
 
 ## クイックスタート
-
-```rust
-use instructors::prelude::*;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Contact { name: String, email: Option<String> }
-
-let client = Client::openai("sk-...");
-let contact: Contact = client
-    .extract("Contact John Doe at john@example.com")
-    .await?.value;
-```
-
-## インストール
 
 ```toml
 [dependencies]
 instructors = "1"
 ```
 
-## プロバイダー
-
-| プロバイダー | コンストラクタ | メカニズム |
-|---|---|---|
-| OpenAI | `Client::openai(key)` | `response_format` strict JSON Schema |
-| Anthropic | `Client::anthropic(key)` | 強制 `tool_use`、またはネイティブ `output_config`（オプトイン） |
-| Google Gemini | `Client::gemini(key)` | `response_schema` 構造化 JSON |
-| OpenAI 互換 | `Client::openai_compatible(key, url)` | OpenAI と同一方式 (DeepSeek、Together 等) |
-| Anthropic 互換 | `Client::anthropic_compatible(key, url)` | Anthropic と同一方式 |
-| Gemini 互換 | `Client::gemini_compatible(key, url)` | Gemini と同一方式 |
-
-### デフォルトモデル
-
-モデル未指定時は、各プロバイダーの現行バランス層を使用します:
-
-| プロバイダー | デフォルト |
-|---|---|
-| OpenAI | `gpt-5.6-terra` |
-| Anthropic | `claude-sonnet-5` |
-| Gemini | `gemini-3.6-flash` |
-
-モデル世代はおよそ半年ごとに入れ替わり、退役した id は解決しなくなるため、これらの
-デフォルトはマイナーリリースごとに移動します。特定のモデルを固定する場合は
-`.with_model("...")` を使用してください。
-
-### Anthropic ネイティブ構造化出力
-
-Anthropic の抽出は既定で強制 `tool_use` を使用します（すべての Claude 世代と
-Anthropic 互換プロキシが受け付けます）。対応世代では `output_config.format` により
-ツール往復なしでレスポンステキストを直接制約できます:
-
-```rust
-let client = Client::anthropic("sk-ant-...")
-    .with_anthropic_structured_output();
-```
-
-
-```rust
-// OpenAI
-let client = Client::openai("sk-...");
-
-// Anthropic
-let client = Client::anthropic("sk-ant-...");
-
-// DeepSeek、Together、その他 OpenAI 互換 API
-let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
-
-// Anthropic 互換プロキシ
-let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
-
-// Google Gemini
-let client = Client::gemini("AIza...");
-
-// Gemini 互換プロキシ
-let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
-```
-
-## ストリーミング
-
-部分的な JSON トークンをリアルタイムで受信：
-
-```rust
-let result = client.extract::<Contact>("...")
-    .on_stream(|chunk| {
-        print!("{chunk}");  // 部分的な JSON フラグメント
-    })
-    .await?;
-```
-
-3 つのプロバイダー（OpenAI、Anthropic、Gemini）すべてでストリーミングをサポート。最終結果はすべてのチャンクを結合してデシリアライズされます。
-
-## 画像入力
-
-ビジョン対応モデルを使って画像から構造化データを抽出：
-
-```rust
-use instructors::ImageInput;
-
-// URL から
-let result = client.extract::<Description>("この画像を説明してください")
-    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
-    .model("gpt-5.6-terra")
-    .await?;
-
-// base64 から
-let result = client.extract::<Description>("この画像を説明してください")
-    .image(ImageInput::Base64 {
-        media_type: "image/png".into(),
-        data: base64_string,
-    })
-    .await?;
-
-// 複数画像
-let result = client.extract::<Comparison>("これらの画像を比較してください")
-    .images(vec![
-        ImageInput::Url("https://example.com/a.jpg".into()),
-        ImageInput::Url("https://example.com/b.jpg".into()),
-    ])
-    .await?;
-```
-
-## プロバイダーフォールバック
-
-複数のプロバイダーをチェーンして自動フェイルオーバーを実現：
-
-```rust
-let client = Client::openai("sk-...")
-    .with_fallback(Client::anthropic("sk-ant-..."))
-    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
-
-// OpenAI を最初に試行 → 失敗時に Anthropic → 最終手段として DeepSeek
-let result = client.extract::<Contact>("...").await?;
-```
-
-各フォールバックはプライマリプロバイダーがリトライを使い切った後、順番に試行されます。
-
-## バリデーション
-
-抽出データの自動リトライ付きバリデーション — 無効な結果はエラー詳細と共に LLM にフィードバックされます。
-
-### クロージャベース
-
-```rust
-let user: User = client.extract("...")
-    .validate(|u: &User| {
-        if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
-    })
-    .await?.value;
-```
-
-### トレイトベース
-
 ```rust
 use instructors::prelude::*;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct Email { address: String }
-
-impl Validate for Email {
-    fn validate(&self) -> Result<(), ValidationError> {
-        if self.address.contains('@') { Ok(()) }
-        else { Err("invalid email".into()) }
-    }
-}
-
-let email: Email = client.extract("...").validated().await?.value;
-```
-
-## リスト抽出
-
-`extract_many` でテキストから複数のアイテムを抽出:
-
-```rust
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Entity {
+struct Contact {
     name: String,
-    entity_type: String,
+    email: Option<String>,
 }
 
-let entities: Vec<Entity> = client
-    .extract_many("Apple CEO Tim Cook met Google CEO Sundar Pichai")
-    .await?.value;
-```
-
-## バッチ処理
-
-設定可能な並行数で複数のプロンプトを同時処理:
-
-```rust
-let prompts = vec!["review 1".into(), "review 2".into(), "review 3".into()];
-
-let results = client
-    .extract_batch::<Review>(prompts)
-    .concurrency(5)
-    .validate(|r: &Review| { /* ... */ Ok(()) })
-    .run()
-    .await;
-
-// 各結果は独立 — 部分的な失敗は他に影響しません
-for result in results {
-    match result {
-        Ok(r) => println!("{:?}", r.value),
-        Err(e) => eprintln!("failed: {e}"),
-    }
-}
-```
-
-## マルチターン会話
-
-メッセージ履歴を渡してコンテキストを考慮した抽出を実行:
-
-```rust
-use instructors::Message;
-
-let result = client.extract::<Summary>("summarize the above")
-    .messages(vec![
-        Message::user("Here is a long document..."),
-        Message::assistant("I see the document."),
-    ])
-    .await?;
-```
-
-## 分類
-
-列挙型は分類タスクに自然に対応します:
-
-```rust
-#[derive(Debug, Deserialize, JsonSchema)]
-enum Sentiment { Positive, Negative, Neutral }
-
-let sentiment: Sentiment = client
-    .extract("This product is amazing!")
-    .await?.value;
-```
-
-## ネストされた型
-
-ベクタ、オプション、列挙型を含む複雑なネスト構造:
-
-```rust
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Paper {
-    title: String,
-    authors: Vec<Author>,
-    keywords: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Author {
-    name: String,
-    affiliation: Option<String>,
-}
-
-let paper: Paper = client.extract(&pdf_text).model("gpt-5.6-terra").await?.value;
-```
-
-## リトライとタイムアウト
-
-HTTP 429/503 エラーに対する指数バックオフと、リクエスト全体のタイムアウトを設定：
-
-```rust
-use std::time::Duration;
-use instructors::BackoffConfig;
-
-let client = Client::openai("sk-...")
-    .with_retry_backoff(BackoffConfig::default())  // 500ms ベース, 30s 上限, 3 回リトライ
-    .with_timeout(Duration::from_secs(120));        // 全体タイムアウト
-
-// リクエストごとに上書き
-let result = client.extract::<Contact>("...")
-    .retry_backoff(BackoffConfig {
-        base_delay: Duration::from_millis(200),
-        max_delay: Duration::from_secs(10),
-        jitter: true,
-        max_http_retries: 5,
-    })
-    .timeout(Duration::from_secs(30))
-    .await?;
-```
-
-バックオフ未設定時、HTTP 429/503 エラーは即座に失敗します（デフォルト動作は変更なし）。
-
-## 設定
-
-```rust
-let result: MyStruct = client
-    .extract("input text")
-    .model("gpt-5.6-luna")            // モデルを上書き
-    .system("You are an expert...")   // カスタムシステムプロンプト
-    .temperature(0.0)                 // 決定的な出力
-    .max_tokens(2048)                 // 出力トークン数の上限
-    .max_retries(3)                   // パース/バリデーション失敗時のリトライ回数
-    .context("extra context...")      // プロンプトに追加コンテキストを付与
-    .retry_backoff(BackoffConfig::default()) // HTTP 429/503 バックオフ
-    .timeout(Duration::from_secs(30))        // 全体タイムアウト
+let client = Client::openai("sk-...");
+let contact: Contact = client
+    .extract("Contact John Doe at john@example.com")
     .await?
     .value;
 ```
 
-> **`temperature` は Anthropic には送信されません。** 現行の Claude 世代は
-> 既定値以外の `temperature` を 400 で拒否するため、Anthropic のリクエストには
-> このフィールドを含めておらず、この設定は無効です。OpenAI と Gemini
-> 系には通常どおり送信されます。
+## 対応プロバイダー
 
-## クライアントデフォルト
+3 つのプロトコルに対応しています。`_compatible` の付いたコンストラクタは、同じプロトコルを別のベース URL に向けます。
 
-デフォルトを一度設定し、リクエストごとに上書き可能:
+| コンストラクタ | プロトコル | スキーマの送り方 |
+|---|---|---|
+| `Client::openai(key)` | OpenAI Chat Completions | `response_format`（strict な `json_schema`） |
+| `Client::openai_compatible(key, url)` | 同上 | 同上。サーバーが strict な `json_schema` に対応している必要があります |
+| `Client::anthropic(key)` | Anthropic Messages | `output_config.format`（構造化出力）|
+| `Client::anthropic_compatible(key, url)` | 同上 | ツールを定義し、`tool_choice` で呼び出しを強制 |
+| `Client::gemini(key)` | Gemini `generateContent` | `generationConfig.responseSchema` |
+| `Client::gemini_compatible(key, url)` | 同上 | 同上 |
+
+`openai_compatible` はベース URL のホスト名を見ます。`api.openai.com` には `max_completion_tokens` を使い、DeepSeek（`deepseek.com`）、Qwen（`aliyuncs.com`）、Kimi（`moonshot.cn`、`moonshot.ai`）、GLM（`bigmodel.cn`、`z.ai`）にはそれぞれの[思考パラメーター](#思考の深さ)を送ります。それ以外のホストは汎用の OpenAI 互換サーバーとして扱います。
+
+自分自身を参照する型（木構造や連結リスト）は `$defs` と `$ref` で送ります。Anthropic の構造化出力は再帰を表現できないため、こうした型では Anthropic へのリクエストをツールと `tool_choice: auto` に切り替え、Gemini には `responseSchema` ではなく `responseJsonSchema` を送ります。
+
+モデルを指定しない場合のデフォルト：
+
+| プロバイダー | デフォルト |
+|---|---|
+| OpenAI と OpenAI 互換 | `gpt-5.6-terra` |
+| Anthropic | `claude-sonnet-5` |
+| Gemini | `gemini-3.6-flash` |
+
+モデルはおよそ半年ごとに世代交代し、提供終了した ID は使えなくなります。そのためデフォルトはマイナーリリースごとに変わります。アップグレード後も同じモデルを使うには `.with_model("...")` を指定してください。
+
+## 思考の深さ
+
+モデルにどれだけ考えさせるかは 1 つの設定で指定します。クライアント全体にも、リクエストごとにも設定できます。
+
+```rust
+use instructors::{Effort, Reasoning};
+
+let client = Client::gemini("AIza...").with_reasoning(Reasoning::Effort(Effort::Low));
+
+let r = client
+    .extract::<Invoice>(text)
+    .reasoning(Reasoning::Budget(2048))
+    .await?;
+```
+
+設定しなければ何も送りません。各プロバイダーには次のパラメーターを送ります。
+
+| プロバイダー | `Effort(e)` | `Budget(n)` | `Off` |
+|---|---|---|---|
+| OpenAI、汎用の OpenAI 互換 | `reasoning_effort: e` | 送信せずにエラーを返す | `reasoning_effort: "none"` |
+| Anthropic | `thinking: {type: "adaptive"}` と `output_config.effort: e` | `thinking: {type: "enabled", budget_tokens: n}` | `thinking: {type: "disabled"}` |
+| Gemini | `thinkingConfig.thinkingLevel` | `thinkingConfig.thinkingBudget: n` | `thinkingConfig.thinkingBudget: 0` |
+| DeepSeek、Kimi、GLM | `thinking: {type: "enabled"}` と `reasoning_effort`（`low`、`high`、`max` の 3 段階）| 送信せずにエラーを返す | `thinking: {type: "disabled"}` |
+| Qwen | `enable_thinking: true` | `enable_thinking: true`、`thinking_budget: n` | `enable_thinking: false` |
+
+`Effort` は `Minimal`、`Low`、`Medium`、`High`、`XHigh`、`Max` の 6 段階です。Anthropic には `minimal` がないので `low` を、Gemini には `MAX` がないので `XHIGH` を送ります。DeepSeek、Kimi、GLM は 3 段階なので、`Minimal` と `Low` は `low`、`Medium` と `High` は `high`、`XHigh` と `Max` は `max` になります。
+
+どのモデルがどの値を受け付けるかの一覧は持っていません。モデルが受け付けない値を送ると、プロバイダーのエラーメッセージがそのまま `Error::Api` で返ります。2026 年 11 月時点の各社ドキュメントによると、たとえば Claude Opus 5.5 は `thinking: disabled` と `budget_tokens` を、Claude Sonnet 5.5 は `thinking: disabled` を拒否し、Gemini 4 系は思考をオフにできません。
+
+Anthropic では強制ツール呼び出しと思考を同時に使えません。そのため思考の設定があるときは、ツールを使う経路（`anthropic_compatible` や再帰型）で `tool_choice: auto` を送ります。
+
+思考に使われたトークンは出力として課金されます。3 つのプロトコルとも、`usage.output_tokens` と費用の見積もりに含めています。
+
+## ストリーミング
+
+`on_partial` は、ストリーミングでデータが届くたびに、その時点までに解析できた JSON を渡してクロージャを呼びます。
+
+```rust
+let article: Article = client
+    .extract("...")
+    .on_partial(|v| {
+        if let Some(title) = v.get("title").and_then(|t| t.as_str()) {
+            println!("ここまでのタイトル: {title}");
+        }
+    })
+    .await?
+    .value;
+```
+
+渡される値は、インクリメンタルパーサーの内部状態を借用したビューです。パーサーは各バイトを 1 回しか読まないので、ストリーム全体の処理量は長さに比例します。受信途中の文字列には届いた分の文字が入っており、`is_complete()` で値が閉じたかどうかがわかります。`to_value()` は `serde_json::Value` にコピーします。パーサーは [`instructors::partial::PartialParser`](https://docs.rs/instructors/latest/instructors/partial/) として公開しているので、`extract` の外でも使えます。
+
+`on_stream` は生のテキスト断片を渡します。どちらかを設定するとリクエストはストリーミングになり、最終結果はいつもどおり回答全体から解析します。OpenAI へのストリーミングリクエストには `stream_options.include_usage` を付けるので、トークン数と費用も取得できます。
+
+## 対処できるエラー
+
+| 状況 | 返る内容 |
+|---|---|
+| プロバイダーが 2xx 以外のステータスを返した | `Error::Api { status, message }`（`message` はレスポンス本文）|
+| 再試行をすべて使っても、回答をパースできないか検証に失敗した | `Error::ExtractionFailed` または `Error::ValidationFailed`（最後のエラーつき）|
+| モデルが回答を拒否した（OpenAI の `refusal`、Anthropic の `stop_reason: refusal`、Gemini の安全性による停止）| `err.refusal()` が拒否の文面を返す。再試行しない |
+| 回答が出力トークンの上限で切れ（OpenAI `finish_reason: length`、Anthropic `max_tokens`、Gemini `MAX_TOKENS`）、パースできなかった | `err.is_truncated()` が true。再試行も修復もしない |
+| 抽出全体がタイムアウトを超えた | `Error::Timeout` |
+
+フォールバックを設定している場合、エラーの種類はプライマリーのものを保ち、メッセージに各フォールバックのエラーを並べます。
+
+## 検証と再試行
+
+```rust
+let user: User = client
+    .extract("...")
+    .validate(|u: &User| {
+        if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
+    })
+    .await?
+    .value;
+```
+
+型に `Validate` を実装して `.validated()` を呼ぶこともできます。パースや検証に失敗すると、次の試行ではエラーメッセージを付けて尋ね直します。回数は `max_retries`（デフォルト 2）までです。再試行を使う前に、壊れた JSON（末尾のカンマ、シングルクォート、引用符のないキー、markdown のコードフェンス）を [jsonrepair](https://crates.io/crates/jsonrepair) で修復します。
+
+## リスト、バッチ、会話履歴、画像
+
+```rust
+// リスト: スキーマのルートは {"items": [...]}、結果は Vec<Entity>
+let entities: Vec<Entity> = client.extract_many("Tim Cook met Sundar Pichai").await?.value;
+
+// 複数のプロンプトを同時 5 件までで処理。結果は入力と同じ順序
+let results = client.extract_batch::<Review>(prompts).concurrency(5).run().await;
+
+// プロンプトの前に会話履歴を置く
+let r = client
+    .extract::<Summary>("summarize the above")
+    .messages(vec![Message::user("..."), Message::assistant("...")])
+    .await?;
+
+// 画像（URL または base64）
+let r = client
+    .extract::<Description>("describe this")
+    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .await?;
+```
+
+## フォールバック、バックオフ、タイムアウト
+
+```rust
+use std::time::Duration;
+
+let client = Client::openai("sk-...")
+    .with_fallback(Client::anthropic("sk-ant-..."))
+    .with_retry_backoff(BackoffConfig::default()) // 429、500、502、503、504、529
+    .with_timeout(Duration::from_secs(120));      // 抽出全体の制限時間
+```
+
+フォールバックは、プライマリーが再試行を使い切ってから、フォールバック側のデフォルトモデルで試します。バックオフは設定しない限り無効です。`BackoffConfig::default()` は 500 ms から倍々に最大 30 s まで待ち、ジッターを加え、HTTP の再試行は最大 3 回です。
+
+## 設定
+
+クライアントにデフォルトを設定し、リクエストごとに上書きできます。
 
 ```rust
 let client = Client::openai("sk-...")
     .with_model("gpt-5.6-luna")
+    .with_system("Extract data precisely.")
     .with_temperature(0.0)
-    .with_max_retries(3)
-    .with_system("Extract data precisely.");
+    .with_max_tokens(4096)
+    .with_max_retries(3);
 
-// すべての抽出で上記のデフォルトが使用されます
-let a: TypeA = client.extract("...").await?.value;
-let b: TypeB = client.extract("...").await?.value;
-
-// 特定のリクエストでのみ上書き
-let c: TypeC = client.extract("...").model("gpt-5.6-terra").await?.value;
+let r: Contact = client
+    .extract("...")
+    .model("gpt-5.6-terra")
+    .context("extra context appended to the prompt")
+    .on_request(|model, prompt| println!("{model}: {} bytes", prompt.len()))
+    .on_response(|usage| println!("{} tokens", usage.total_tokens))
+    .await?
+    .value;
 ```
 
-## コスト追跡
+| 設定 | OpenAI 系 | Anthropic | Gemini |
+|---|---|---|---|
+| 最大出力トークン数 | OpenAI には `max_completion_tokens`、互換 API には `max_tokens`。設定しなければ送らない | `max_tokens`。未設定なら 16384 | `maxOutputTokens`。未設定なら 16384 |
+| temperature | 送る。デフォルトは 0.0 | 送らない。現行の Claude はデフォルト以外の値を拒否する | 設定したときだけ送る |
 
-[tiktoken](https://crates.io/crates/tiktoken) によるトークンカウントとコスト推定を内蔵:
+## 費用
 
 ```rust
-let result = client.extract::<Contact>("...").await?;
-
-println!("input:  {} tokens", result.usage.input_tokens);
-println!("output: {} tokens", result.usage.output_tokens);
-println!("cost:   ${:.6}", result.usage.cost.unwrap_or(0.0));
-println!("retries: {}", result.usage.retries);
+let r = client.extract::<Contact>("...").await?;
+println!("入力 {}、出力 {}、{:?} USD", r.usage.input_tokens, r.usage.output_tokens, r.usage.cost);
 ```
 
-`cost` は価格表にないモデルでは `None` になります。モデル id の解決は `tiktoken`
-が行うため、プロバイダに送ったその id —— 表がドットのところを API はハイフン、
-リリース日サフィックス、Bedrock / Vertex の装飾 —— でも該当モデルとして計上され、
-黙ってコストが消えることはありません。
-
-`default-features = false` で無効化:
+費用は [tiktoken](https://crates.io/crates/tiktoken) の価格表で計算します（`cost-tracking` feature、デフォルトで有効。語彙データはリンクしません）。リクエストごとに計算して再試行分を合算し、価格表にないモデルでは `None` になります。モデル ID は tiktoken が解決するので、プロバイダーごとの表記（ハイフン区切り、日付の接尾辞、Bedrock や Vertex の接頭辞）でも価格が出ます。
 
 ```toml
-[dependencies]
-instructors = { version = "1", default-features = false }
+instructors = { version = "1", default-features = false } # 費用計算なし
 ```
 
-## JSON 自動修復
+## 性能
 
-LLM が不正な JSON を返した場合 — 末尾カンマ、シングルクォート、引用符なしのキー、Markdown コードフェンスなど — instructors はデシリアライズ前に自動的に出力の修復を試みます。修復に成功した場合、リトライを消費せずに直接パースされるため、トークンとレイテンシを節約できます。これは、軽微なフォーマットエラーが発生しやすい小規模モデルやオープンソースモデルで特に有効です。
+2026 年 11 月 25 日、Apple M4 Pro の Mac mini（14 コア）で、ベンチマーク用のロックを専有して計測しました。release ビルド、LTO 有効、codegen-units は 1、rustc 1.100.0 です。15 秒ごとに記録した 1 分間のロードアベレージは、ビルドを含む全期間で 1.6 から 4.8 の間でした。各数値は 5〜7 ラウンドの中央値です。1.4.1 と 1.5 のビルドを交互に 2 回ずつ走らせ、表には 1 回目の結果を載せています。2 回目との差は「基準からの増分」の列で 1.2 µs 以内、それ以外で 4% 以内でした。データは `Invoice` で、ネストした住所 2 つ、列挙型 1 つ、省略可能なフィールドを持つ明細 8 行を含み、日中の文字とエスケープされた引用符が入った 1,247 バイトの JSON です。リクエストはすべてローカルのループバック HTTP サーバーに送り、実際の API は呼んでいません。ベンチマークのプログラムはこのリポジトリには含まれていません。
 
-修復は透過的に行われ、設定は不要です。すべてのレスポンスに対して `serde_json` パース前に自動実行され、修復できない場合は通常のリトライパスにフォールバックします。
+**`extract` 1 回の全体**（キープアライブした HTTP/1.1 接続で逐次呼び出し、5 × 5,000 回。基準は、同じプロセスで同じ `reqwest` クライアントから事前に組み立てた本文を送り、応答を `serde_json` で解析したもの）：
 
-## ライフサイクルフック
+| クライアント | 1 回あたり | 基準からの増分 |
+|---|---:|---:|
+| 基準 | 50.7 µs | |
+| instructors 1.5 | 53.0 µs | 2.3 µs |
+| instructors 1.4.1（別の回で計測。その回の基準は 49.1 µs）| 66.4 µs | 17.3 µs |
+| rstructor 0.6.0 | 75.8 µs | 25.1 µs |
+| rig-core 0.47.1（`output_schema` のあと `serde_json::from_str`）| 79.1 µs | 28.4 µs |
 
-リクエストとレスポンスを監視:
+実際のモデル呼び出しは数百ミリ秒以上かかるので、この数マイクロ秒が効くのは大量のバッチ処理やプロキシでの CPU コストで、1 回の呼び出しの待ち時間ではありません。
 
-```rust
-let result = client.extract::<Contact>("...")
-    .on_request(|model, prompt| {
-        println!("[req] model={model}, prompt_len={}", prompt.len());
-    })
-    .on_response(|usage| {
-        println!("[res] tokens={}, cost={:?}", usage.total_tokens, usage.cost);
-    })
-    .await?;
-```
+**リクエストごとのスキーマ処理：**
 
-## 仕組み
+| 処理 | 時間 |
+|---|---:|
+| instructors 1.5：キャッシュ済みの送信用スキーマのバイト列をリクエスト本文にコピー | 30 ns |
+| instructors 1.4.1：キャッシュしたスキーマを OpenAI 向けに変換してからシリアライズ | 10.8 µs + 1.1 µs |
+| rstructor 0.6.0：`Invoice::schema().to_json()` | 7.7 µs |
+| 参考：キャッシュなしの `schemars::schema_for!(Invoice)` | 3.8 µs |
 
-1. `#[derive(JsonSchema)]` が Rust の型から JSON Schema を生成 ([schemars](https://crates.io/crates/schemars) を利用)
-2. スキーマは型ごとにキャッシュ (スレッドローカル、ロック競合なし)
-3. スキーマはターゲットプロバイダー向けに変換:
-   - **OpenAI**: `response_format` に strict モードでラップ (`additionalProperties: false`、全フィールド必須)
-   - **Anthropic**: `tool` として `input_schema` にラップし、`tool_choice` で強制
-   - **Gemini**: `response_schema` として渡し、`response_mime_type: "application/json"` を設定
-4. LLM はスキーマに一致する有効な JSON の出力に制約
-5. レスポンス JSON が不正な場合 (末尾カンマ、シングルクォート、引用符なしのキー、Markdown フェンス) は自動修復
-6. レスポンスは `serde_json::from_str::<T>()` でデシリアライズ
-7. `Validate` トレイトまたは `.validate()` クロージャが設定されている場合、バリデーションを実行
-8. パースまたはバリデーションの失敗時、エラーフィードバックを送信してリクエストをリトライ
+**ストリーミング中の途中の値**（1,247 バイトの回答が 4 バイトずつ 308 回に分かれて届き、届くたびに途中の値を取り出す。ストリーム全体の合計）：
 
-<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
+| 方式 | ストリーム全体 |
+|---|---:|
+| instructors 1.5 の `PartialParser`：届いた分を渡し、借用したビューを読む | 5.5 µs |
+| 同上に加えて、届くたびに `serde_json::Value` へコピー | 307 µs |
+| 届くたびにバッファ全体を `Value` に解析し直す（rstructor 0.6.0 の方式）| 677 µs |
+| 届くたびにバッファ全体へ partial-json-fixer 0.5.5 をかけてから解析 | 735 µs |
+| 届くたびにバッファ全体へ jsonrepair 0.1.0 をかけてから解析 | 2,035 µs |
+| 参考：完成した回答を `serde_json::from_str::<Invoice>` で 1 回解析 | 1.6 µs |
 
-## エコシステム
-
-[tiktoken](https://crates.io/crates/tiktoken) · [@goliapkg/tiktoken-wasm](https://www.npmjs.com/package/@goliapkg/tiktoken-wasm) · **instructors** · [chunkedrs](https://crates.io/crates/chunkedrs) · [embedrs](https://crates.io/crates/embedrs)
-
-<!-- ECOSYSTEM END -->
+パーサーの処理量はバイト列の分かれ方に左右されないので、コストはストリームの長さに比例します。解析し直す方式では長さの 2 乗に比例して増えます。
 
 ## ライセンス
 
-[MIT](LICENSE)
+[MIT](LICENSE-MIT) と [Apache-2.0](LICENSE-APACHE) のどちらかを選んで利用できます。

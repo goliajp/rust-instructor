@@ -1,427 +1,260 @@
 # instructors
 
-[![Crates.io](https://img.shields.io/crates/v/instructors?style=flat-square&logo=rust)](https://crates.io/crates/instructors)
+[![crates.io](https://img.shields.io/crates/v/instructors?style=flat-square&logo=rust)](https://crates.io/crates/instructors)
 [![docs.rs](https://img.shields.io/docsrs/instructors?style=flat-square&logo=docs.rs)](https://docs.rs/instructors)
-[![License](https://img.shields.io/crates/l/instructors?style=flat-square)](LICENSE)
-[![Downloads](https://img.shields.io/crates/d/instructors?style=flat-square)](https://crates.io/crates/instructors)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
+[![CI](https://img.shields.io/github/actions/workflow/status/goliajp/rust-instructor/ci.yml?branch=develop&style=flat-square&logo=github&label=ci)](https://github.com/goliajp/rust-instructor/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/instructors?style=flat-square)](#许可证)
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-类型安全的 LLM 结构化输出提取。Rust 版 [instructor](https://github.com/jxnl/instructor)。
+> **升级到 1.5？** API 只增不减，但有四处请求内容变了：`Client::anthropic` 改用结构化输出（`output_config.format`）发送 schema，不再强制调用工具，因为 Claude Opus 5.5、Sonnet 5.5 以及 Fable 5.1 之后的模型会拒绝强制工具调用；想要原来的请求，调用 `.with_anthropic_tool_use()`。`extract_many` 要求模型返回 `{"items": [...]}`，不再是裸数组。设置的最大输出 token 数现在会发给 OpenAI 系的接口。Gemini 的 API key 从 URL 移到了 `x-goog-api-key` 请求头。详见 [CHANGELOG](CHANGELOG.md#unreleased)。
 
-定义一个 Rust 结构体 → instructors 自动生成 JSON Schema → LLM 返回合法 JSON → 你得到一个强类型值。支持自动校验与重试。
+用 Rust 从 LLM 拿到带类型的结构化输出。给一个类型加上 `Deserialize` 和 `JsonSchema`，调用 `extract`，返回的就是这个类型的值。crate 按各家接口能强制执行的格式发送这个类型的 JSON schema；模型返回的 JSON 有格式错误时先修复；解析失败或者你自己的校验不通过时，把错误发回给模型再问一次。设计上参考了 Python 的 [instructor](https://github.com/567-labs/instructor)。
 
-## 亮点
-
-- **6 大提供商** — OpenAI、Anthropic、Gemini、DeepSeek、Together，以及任何 OpenAI/Anthropic/Gemini 兼容 API
-- **校验 + 重试** — 无效输出连同错误详情反馈给 LLM，自动纠正
-- **JSON 自动修复** — 在重试前修复尾部逗号、单引号、Markdown 围栏等，节省 token 和延迟
-- **提供商故障转移** — 链式配置多个提供商实现自动切换
-- **流式输出** — 实时接收部分 JSON token（OpenAI、Anthropic、Gemini）
-- **批量 + 并发** — 通过 `Semaphore` 控制并发度，处理数百个提示
-- **视觉** — 从图片提取结构化数据（URL 或 base64）
-- **费用追踪** — 通过 [tiktoken](https://crates.io/crates/tiktoken) 提供逐请求 token 计数与费用估算
-
-## 为什么选择 instructors？
-
-| 维度 | 原始 API + serde | instructors |
-|---|---|---|
-| Schema 约束 | 手写 JSON Schema | 从 `#[derive(JsonSchema)]` 自动生成 |
-| 解析失败 | 崩溃或静默丢数据 | 自动重试并将错误反馈给 LLM |
-| 格式错误的 JSON | 应用报错 | 反序列化前自动修复 |
-| 多提供商 | 每个提供商单独适配 | 统一接口，一行切换 |
-| 校验 | 解析后手写 if/else | `.validate()` 支持 LLM 感知的重试 |
-| 费用追踪 | 自行计算 token | 内置 tiktoken 支持 |
+在本机回环的基准测试里（一张有 8 个明细行的发票），一次 `extract` 调用比直接用 `reqwest` 发同样的请求多花 2.3 µs 的客户端 CPU 时间；rstructor 0.6.0 多花 25.1 µs，rig-core 0.47.1 多花 28.4 µs。一个 1.2 KB 的回答分 308 段流式到达时，边收边解析出部分值的总开销是 5.5 µs；rstructor 采用的每段都重新解析整个缓冲区的做法是 677 µs。测试条件和完整数据见[性能](#性能)。
 
 ## 快速开始
-
-```rust
-use instructors::prelude::*;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Contact { name: String, email: Option<String> }
-
-let client = Client::openai("sk-...");
-let contact: Contact = client
-    .extract("Contact John Doe at john@example.com")
-    .await?.value;
-```
-
-## 安装
 
 ```toml
 [dependencies]
 instructors = "1"
 ```
 
-## 服务提供商
-
-| 提供商 | 构造方法 | 机制 |
-|---|---|---|
-| OpenAI | `Client::openai(key)` | `response_format` 严格 JSON Schema |
-| Anthropic | `Client::anthropic(key)` | 强制 `tool_use`,或原生 `output_config`(可选) |
-| OpenAI 兼容 | `Client::openai_compatible(key, url)` | 与 OpenAI 相同（DeepSeek、Together 等） |
-| Anthropic 兼容 | `Client::anthropic_compatible(key, url)` | 与 Anthropic 相同 |
-| Google Gemini | `Client::gemini(key)` | `response_schema` 结构化 JSON |
-| Gemini 兼容 | `Client::gemini_compatible(key, url)` | 与 Gemini 相同 |
-
-### 默认模型
-
-未指定模型时,各家使用当前的均衡档:
-
-| 提供商 | 默认模型 |
-|---|---|
-| OpenAI | `gpt-5.6-terra` |
-| Anthropic | `claude-sonnet-5` |
-| Gemini | `gemini-3.6-flash` |
-
-模型世代大约每半年更替一次,退役的 id 会直接失效,所以这些默认值会随每个 minor
-版本移动。需要锁定某个具体模型时用 `.with_model("...")`。
-
-### Anthropic 原生结构化输出
-
-Anthropic 抽取默认走强制 `tool_use`,所有 Claude 世代和所有 Anthropic 兼容代理都
-认。在支持的世代上,`output_config.format` 可以直接约束响应文本,省掉工具往返:
-
-```rust
-let client = Client::anthropic("sk-ant-...")
-    .with_anthropic_structured_output();
-```
-
-
-```rust
-// OpenAI
-let client = Client::openai("sk-...");
-
-// Anthropic
-let client = Client::anthropic("sk-ant-...");
-
-// DeepSeek、Together 或任何 OpenAI 兼容 API
-let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
-
-// Anthropic 兼容代理
-let client = Client::anthropic_compatible("sk-...", "https://proxy.example.com/v1");
-
-// Google Gemini
-let client = Client::gemini("AIza...");
-
-// Gemini 兼容代理
-let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
-```
-
-## 流式输出
-
-实时接收部分 JSON token：
-
-```rust
-let result = client.extract::<Contact>("...")
-    .on_stream(|chunk| {
-        print!("{chunk}");  // 部分 JSON 片段
-    })
-    .await?;
-```
-
-三大提供商（OpenAI、Anthropic、Gemini）均支持流式输出。最终结果由所有片段拼接后反序列化。
-
-## 图片输入
-
-使用视觉模型从图片中提取结构化数据：
-
-```rust
-use instructors::ImageInput;
-
-// 通过 URL
-let result = client.extract::<Description>("描述这张图片")
-    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
-    .model("gpt-5.6-terra")
-    .await?;
-
-// 通过 base64
-let result = client.extract::<Description>("描述这张图片")
-    .image(ImageInput::Base64 {
-        media_type: "image/png".into(),
-        data: base64_string,
-    })
-    .await?;
-
-// 多张图片
-let result = client.extract::<Comparison>("对比这些图片")
-    .images(vec![
-        ImageInput::Url("https://example.com/a.jpg".into()),
-        ImageInput::Url("https://example.com/b.jpg".into()),
-    ])
-    .await?;
-```
-
-## 提供商故障转移
-
-链式配置多个提供商实现自动故障转移：
-
-```rust
-let client = Client::openai("sk-...")
-    .with_fallback(Client::anthropic("sk-ant-..."))
-    .with_fallback(Client::openai_compatible("sk-...", "https://api.deepseek.com/v1"));
-
-// 优先尝试 OpenAI → 失败后尝试 Anthropic → 最后尝试 DeepSeek
-let result = client.extract::<Contact>("...").await?;
-```
-
-每个备选提供商按顺序尝试，仅在主提供商耗尽重试次数后触发。
-
-## 校验
-
-对提取的数据进行校验并自动重试——校验失败时，会将错误详情反馈给 LLM 重新生成。
-
-### 基于闭包
-
-```rust
-let user: User = client.extract("...")
-    .validate(|u: &User| {
-        if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
-    })
-    .await?.value;
-```
-
-### 基于 trait
-
 ```rust
 use instructors::prelude::*;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct Email { address: String }
-
-impl Validate for Email {
-    fn validate(&self) -> Result<(), ValidationError> {
-        if self.address.contains('@') { Ok(()) }
-        else { Err("invalid email".into()) }
-    }
-}
-
-let email: Email = client.extract("...").validated().await?.value;
-```
-
-## 列表提取
-
-使用 `extract_many` 从文本中提取多个条目：
-
-```rust
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Entity {
+struct Contact {
     name: String,
-    entity_type: String,
+    email: Option<String>,
 }
 
-let entities: Vec<Entity> = client
-    .extract_many("Apple CEO Tim Cook met Google CEO Sundar Pichai")
-    .await?.value;
-```
-
-## 批量处理
-
-通过可配置的并发度并行处理多个提示：
-
-```rust
-let prompts = vec!["review 1".into(), "review 2".into(), "review 3".into()];
-
-let results = client
-    .extract_batch::<Review>(prompts)
-    .concurrency(5)
-    .validate(|r: &Review| { /* ... */ Ok(()) })
-    .run()
-    .await;
-
-// 每个结果独立——部分失败不影响其他结果
-for result in results {
-    match result {
-        Ok(r) => println!("{:?}", r.value),
-        Err(e) => eprintln!("failed: {e}"),
-    }
-}
-```
-
-## 多轮对话
-
-传入消息历史以实现上下文感知的提取：
-
-```rust
-use instructors::Message;
-
-let result = client.extract::<Summary>("summarize the above")
-    .messages(vec![
-        Message::user("Here is a long document..."),
-        Message::assistant("I see the document."),
-    ])
-    .await?;
-```
-
-## 分类
-
-枚举天然适用于分类任务：
-
-```rust
-#[derive(Debug, Deserialize, JsonSchema)]
-enum Sentiment { Positive, Negative, Neutral }
-
-let sentiment: Sentiment = client
-    .extract("This product is amazing!")
-    .await?.value;
-```
-
-## 嵌套类型
-
-支持包含向量、可选值和枚举的复杂嵌套结构：
-
-```rust
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Paper {
-    title: String,
-    authors: Vec<Author>,
-    keywords: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Author {
-    name: String,
-    affiliation: Option<String>,
-}
-
-let paper: Paper = client.extract(&pdf_text).model("gpt-5.6-terra").await?.value;
-```
-
-## 重试与超时
-
-启用 HTTP 429/503 错误的指数退避重试，并设置整体请求超时：
-
-```rust
-use std::time::Duration;
-use instructors::BackoffConfig;
-
-let client = Client::openai("sk-...")
-    .with_retry_backoff(BackoffConfig::default())  // 500ms 基础延迟, 30s 上限, 3 次重试
-    .with_timeout(Duration::from_secs(120));        // 整体超时
-
-// 按请求覆盖
-let result = client.extract::<Contact>("...")
-    .retry_backoff(BackoffConfig {
-        base_delay: Duration::from_millis(200),
-        max_delay: Duration::from_secs(10),
-        jitter: true,
-        max_http_retries: 5,
-    })
-    .timeout(Duration::from_secs(30))
-    .await?;
-```
-
-未配置退避时，HTTP 429/503 错误将立即失败（默认行为不变）。
-
-## 配置
-
-```rust
-let result: MyStruct = client
-    .extract("input text")
-    .model("gpt-5.6-luna")            // 覆盖模型
-    .system("You are an expert...")   // 自定义系统提示
-    .temperature(0.0)                 // 确定性输出
-    .max_tokens(2048)                 // 限制输出 token 数
-    .max_retries(3)                   // 解析/校验失败时重试
-    .context("extra context...")      // 追加到提示
-    .retry_backoff(BackoffConfig::default()) // HTTP 429/503 退避
-    .timeout(Duration::from_secs(30))        // 整体超时
+let client = Client::openai("sk-...");
+let contact: Contact = client
+    .extract("Contact John Doe at john@example.com")
     .await?
     .value;
 ```
 
-> **`temperature` 不会发给 Anthropic。** 当前的 Claude 世代对非默认
-> `temperature` 直接返回 400,因此 Anthropic 请求体里不带这个字段,该设置在那边
-> 不生效。OpenAI 和 Gemini 两系照常发送。
+## 支持的接口
 
-## 客户端默认值
+支持三种协议。带 `_compatible` 的构造函数把同一种协议指向别的 base URL。
 
-设置一次默认值，按需覆盖：
+| 构造函数 | 协议 | schema 的发送方式 |
+|---|---|---|
+| `Client::openai(key)` | OpenAI Chat Completions | `response_format`，严格模式的 `json_schema` |
+| `Client::openai_compatible(key, url)` | 同上 | 同上；服务端必须支持严格模式的 `json_schema` |
+| `Client::anthropic(key)` | Anthropic Messages | `output_config.format`（结构化输出）|
+| `Client::anthropic_compatible(key, url)` | 同上 | 一个工具，并用 `tool_choice` 强制调用 |
+| `Client::gemini(key)` | Gemini `generateContent` | `generationConfig.responseSchema` |
+| `Client::gemini_compatible(key, url)` | 同上 | 同上 |
+
+`openai_compatible` 会看 base URL 的主机名：`api.openai.com` 用 `max_completion_tokens`；DeepSeek（`deepseek.com`）、通义千问（`aliyuncs.com`）、Kimi（`moonshot.cn`、`moonshot.ai`）和智谱 GLM（`bigmodel.cn`、`z.ai`）用各自的[思考参数](#思考深度)；其他主机按通用的 OpenAI 兼容接口处理。
+
+引用自身的类型（树、链表）用 `$defs` 和 `$ref` 发送。Anthropic 的结构化输出表达不了递归，所以遇到这种类型时，Anthropic 请求改用工具并设 `tool_choice: auto`；Gemini 改用 `responseJsonSchema`，不用 `responseSchema`。
+
+不指定模型时使用的默认模型：
+
+| 接口 | 默认模型 |
+|---|---|
+| OpenAI 及 OpenAI 兼容 | `gpt-5.6-terra` |
+| Anthropic | `claude-sonnet-5` |
+| Gemini | `gemini-3.6-flash` |
+
+各家的模型大约每半年换一代，下线的模型 ID 就不能再用，所以默认模型会随小版本更新。想在升级后继续用同一个模型，请设置 `.with_model("...")`。
+
+## 思考深度
+
+控制模型思考多少，只有一个设置，可以设在 client 上，也可以按请求设置：
+
+```rust
+use instructors::{Effort, Reasoning};
+
+let client = Client::gemini("AIza...").with_reasoning(Reasoning::Effort(Effort::Low));
+
+let r = client
+    .extract::<Invoice>(text)
+    .reasoning(Reasoning::Budget(2048))
+    .await?;
+```
+
+不设置就什么都不发。各家收到的参数如下：
+
+| 接口 | `Effort(e)` | `Budget(n)` | `Off` |
+|---|---|---|---|
+| OpenAI、通用 OpenAI 兼容接口 | `reasoning_effort: e` | 不发送，直接返回错误 | `reasoning_effort: "none"` |
+| Anthropic | `thinking: {type: "adaptive"}` 加 `output_config.effort: e` | `thinking: {type: "enabled", budget_tokens: n}` | `thinking: {type: "disabled"}` |
+| Gemini | `thinkingConfig.thinkingLevel` | `thinkingConfig.thinkingBudget: n` | `thinkingConfig.thinkingBudget: 0` |
+| DeepSeek、Kimi、GLM | `thinking: {type: "enabled"}` 加 `reasoning_effort`（`low`、`high`、`max` 三档）| 不发送，直接返回错误 | `thinking: {type: "disabled"}` |
+| 通义千问 | `enable_thinking: true` | `enable_thinking: true`、`thinking_budget: n` | `enable_thinking: false` |
+
+`Effort` 有六档：`Minimal`、`Low`、`Medium`、`High`、`XHigh`、`Max`。Anthropic 没有 `minimal`，发 `low`；Gemini 没有 `MAX`，发 `XHIGH`；DeepSeek、Kimi、GLM 只有三档，`Minimal` 和 `Low` 发 `low`，`Medium` 和 `High` 发 `high`，`XHigh` 和 `Max` 发 `max`。
+
+crate 不维护「哪个模型接受哪个值」的列表。模型不接受的值，会以 `Error::Api` 返回，内容是接口自己的错误信息。按各家 2026 年 11 月的文档举几个例子：Claude Opus 5.5 不接受 `thinking: disabled` 和 `budget_tokens`；Claude Sonnet 5.5 不接受 `thinking: disabled`；Gemini 4 系列不能关闭思考。
+
+Anthropic 的强制工具调用不能和思考同时使用，所以设置了思考参数时，走工具的请求（`anthropic_compatible`，或者递归类型）改用 `tool_choice: auto`。
+
+思考用的 token 按输出计费。三种协议都把它算进 `usage.output_tokens` 和费用估算。
+
+## 流式输出
+
+`on_partial` 在每收到一段流式数据后调用你的闭包，传入到目前为止解析出的 JSON：
+
+```rust
+let article: Article = client
+    .extract("...")
+    .on_partial(|v| {
+        if let Some(title) = v.get("title").and_then(|t| t.as_str()) {
+            println!("目前的标题：{title}");
+        }
+    })
+    .await?
+    .value;
+```
+
+传进来的值借用的是一个增量解析器的内部状态。解析器每个字节只读一次，整个流的开销和长度成正比。还没收完的字符串里是已经收到的字符，`is_complete()` 表示这个值是否已经闭合。`to_value()` 把它复制成 `serde_json::Value`。解析器本身也公开了，就是 [`instructors::partial::PartialParser`](https://docs.rs/instructors/latest/instructors/partial/)，可以在 `extract` 之外单独使用。
+
+`on_stream` 给的是原始文本片段。设置了这两个回调中的任何一个，请求都会以流式发送；最终结果和平时一样，用完整的回答解析。对 OpenAI，流式请求会带上 `stream_options.include_usage`，所以 token 数和费用都有值。
+
+## 可以区分处理的错误
+
+| 情况 | 返回什么 |
+|---|---|
+| 接口返回非 2xx 状态码 | `Error::Api { status, message }`，`message` 是响应体 |
+| 重试用完后回答仍然无法解析或者校验不通过 | `Error::ExtractionFailed` 或 `Error::ValidationFailed`，带最后一次的错误 |
+| 模型拒绝回答（OpenAI 的 `refusal`、Anthropic 的 `stop_reason: refusal`、Gemini 的安全拦截）| `err.refusal()` 返回拒绝的说明；不重试 |
+| 回答撞上了输出 token 上限（OpenAI `finish_reason: length`、Anthropic `max_tokens`、Gemini `MAX_TOKENS`）而且无法解析 | `err.is_truncated()` 为真；不重试，也不尝试修复 |
+| 整次提取超过了超时时间 | `Error::Timeout` |
+
+配置了备用接口时，返回的错误保留主接口的错误类型，错误信息里列出每个备用接口的错误。
+
+## 校验与重试
+
+```rust
+let user: User = client
+    .extract("...")
+    .validate(|u: &User| {
+        if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
+    })
+    .await?
+    .value;
+```
+
+也可以给类型实现 `Validate`，然后调用 `.validated()`。解析或校验失败时，下一次请求会带上错误信息，最多重试 `max_retries` 次（默认 2 次）。在用掉一次重试之前，先用 [jsonrepair](https://crates.io/crates/jsonrepair) 修复格式错误的 JSON（多余的逗号、单引号、键名没加引号、外面包了 markdown 代码块）。
+
+## 列表、批量、对话历史、图片
+
+```rust
+// 列表：schema 的根是 {"items": [...]}，结果是 Vec<Entity>
+let entities: Vec<Entity> = client.extract_many("Tim Cook met Sundar Pichai").await?.value;
+
+// 一批提示词，同时最多 5 个请求；结果顺序和输入一致
+let results = client.extract_batch::<Review>(prompts).concurrency(5).run().await;
+
+// 在提示词前加上对话历史
+let r = client
+    .extract::<Summary>("summarize the above")
+    .messages(vec![Message::user("..."), Message::assistant("...")])
+    .await?;
+
+// 图片，URL 或 base64
+let r = client
+    .extract::<Description>("describe this")
+    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .await?;
+```
+
+## 备用接口、退避重试、超时
+
+```rust
+use std::time::Duration;
+
+let client = Client::openai("sk-...")
+    .with_fallback(Client::anthropic("sk-ant-..."))
+    .with_retry_backoff(BackoffConfig::default()) // 429、500、502、503、504、529
+    .with_timeout(Duration::from_secs(120));      // 整次提取的时限
+```
+
+主接口用完重试次数后才会试备用接口，用的是备用 client 自己的默认模型。退避重试默认关闭；`BackoffConfig::default()` 从 500 ms 开始每次翻倍，最长 30 s，带随机抖动，HTTP 层最多重试 3 次。
+
+## 设置
+
+在 client 上设默认值，按请求覆盖：
 
 ```rust
 let client = Client::openai("sk-...")
     .with_model("gpt-5.6-luna")
+    .with_system("Extract data precisely.")
     .with_temperature(0.0)
-    .with_max_retries(3)
-    .with_system("Extract data precisely.");
+    .with_max_tokens(4096)
+    .with_max_retries(3);
 
-// 所有提取操作使用上述默认值
-let a: TypeA = client.extract("...").await?.value;
-let b: TypeB = client.extract("...").await?.value;
-
-// 针对特定请求覆盖默认值
-let c: TypeC = client.extract("...").model("gpt-5.6-terra").await?.value;
+let r: Contact = client
+    .extract("...")
+    .model("gpt-5.6-terra")
+    .context("extra context appended to the prompt")
+    .on_request(|model, prompt| println!("{model}: {} bytes", prompt.len()))
+    .on_response(|usage| println!("{} tokens", usage.total_tokens))
+    .await?
+    .value;
 ```
 
-## 费用追踪
+| 设置 | OpenAI 系 | Anthropic | Gemini |
+|---|---|---|---|
+| 最大输出 token 数 | OpenAI 发 `max_completion_tokens`，兼容接口发 `max_tokens`；不设置就不发 | `max_tokens`，不设置时为 16384 | `maxOutputTokens`，不设置时为 16384 |
+| temperature | 发送，默认 0.0 | 从不发送：现在的 Claude 模型不接受非默认值 | 设置了才发送 |
 
-通过 [tiktoken](https://crates.io/crates/tiktoken) 内置 token 计数与费用估算：
+## 费用
 
 ```rust
-let result = client.extract::<Contact>("...").await?;
-
-println!("input:  {} tokens", result.usage.input_tokens);
-println!("output: {} tokens", result.usage.output_tokens);
-println!("cost:   ${:.6}", result.usage.cost.unwrap_or(0.0));
-println!("retries: {}", result.usage.retries);
+let r = client.extract::<Contact>("...").await?;
+println!("输入 {}，输出 {}，{:?} 美元", r.usage.input_tokens, r.usage.output_tokens, r.usage.cost);
 ```
 
-价目表里没有的模型,`cost` 为 `None`。model id 由 `tiktoken` 负责解析,所以你发给
-厂商的那个 id —— 本表用点而 API 用短横线、带发布日期后缀、Bedrock 或 Vertex 的
-平台装饰 —— 都会按对应模型计价,而不是静默地算成没有成本。
-
-通过 `default-features = false` 禁用：
+费用按 [tiktoken](https://crates.io/crates/tiktoken) 的价格表计算（`cost-tracking` feature，默认开启，不会链接任何词表数据）。每个请求单独计价，重试的费用累加；价格表里没有的模型，`cost` 是 `None`。模型 ID 由 tiktoken 解析，所以各家接口自己的写法（用短横线、带日期后缀、带 Bedrock 或 Vertex 前缀）也能算出价格。
 
 ```toml
-[dependencies]
-instructors = { version = "1", default-features = false }
+instructors = { version = "1", default-features = false } # 不计算费用
 ```
 
-## JSON 自动修复
+## 性能
 
-当 LLM 返回格式有误的 JSON 时——尾部逗号、单引号、未加引号的键名、Markdown 代码围栏等——instructors 会在反序列化前自动尝试修复输出。修复成功后直接解析，无需消耗重试次数，从而节省 token 和延迟。这对于更容易产生轻微格式错误的小型或开源模型尤为有用。
+2026 年 11 月 25 日在 Apple M4 Pro Mac mini（14 核）上测量，测量期间独占基准测试锁；release 构建，开启 LTO，codegen-units 为 1，rustc 1.100.0。每 15 秒采样一次的 1 分钟平均负载在整个过程中（包括编译）介于 1.6 和 4.8 之间。每个数字是 5 到 7 轮的中位数。1.4.1 和 1.5 两个构建交替各跑了两遍；表中是第一遍的结果，第二遍和第一遍相比，「比基线多出」一列相差不超过 1.2 µs，其他数字相差不超过 4%。测试数据是一张 `Invoice`：两个嵌套地址、一个枚举、8 个带可选字段的明细行，含中日文字符和转义引号，JSON 共 1,247 字节。所有请求都发给本机回环的 HTTP 服务，不调用任何真实接口。基准测试程序不在本仓库里。
 
-修复过程完全透明：无需任何配置。每次响应在 `serde_json` 解析前都会自动运行修复，若无法修复则回退到正常重试流程。
+**一次 `extract` 调用的完整开销**（在保持连接的 HTTP/1.1 上顺序调用，5 × 5,000 次；基线是同一个进程里用同一个 `reqwest` client 发送事先构造好的请求体，再用 `serde_json` 解析响应）：
 
-## 生命周期钩子
+| 客户端 | 每次调用 | 比基线多出 |
+|---|---:|---:|
+| 基线 | 50.7 µs | |
+| instructors 1.5 | 53.0 µs | 2.3 µs |
+| instructors 1.4.1（单独一遍，那一遍的基线是 49.1 µs）| 66.4 µs | 17.3 µs |
+| rstructor 0.6.0 | 75.8 µs | 25.1 µs |
+| rig-core 0.47.1（`output_schema`，再用 `serde_json::from_str`）| 79.1 µs | 28.4 µs |
 
-观察请求和响应：
+真实的模型调用要几百毫秒甚至更久，所以这几微秒影响的是大批量处理和代理服务的 CPU 开销，不是单次调用的延迟。
 
-```rust
-let result = client.extract::<Contact>("...")
-    .on_request(|model, prompt| {
-        println!("[req] model={model}, prompt_len={}", prompt.len());
-    })
-    .on_response(|usage| {
-        println!("[res] tokens={}, cost={:?}", usage.total_tokens, usage.cost);
-    })
-    .await?;
-```
+**每次请求花在 schema 上的时间：**
 
-## 工作原理
+| 做了什么 | 耗时 |
+|---|---:|
+| instructors 1.5：把缓存好的、可直接发送的 schema 字节复制进请求体 | 30 ns |
+| instructors 1.4.1：把缓存的 schema 转换成 OpenAI 的格式，再序列化 | 10.8 µs + 1.1 µs |
+| rstructor 0.6.0：`Invoice::schema().to_json()` | 7.7 µs |
+| 作为参照：不带缓存的 `schemars::schema_for!(Invoice)` | 3.8 µs |
 
-1. `#[derive(JsonSchema)]` 从你的 Rust 类型生成 JSON Schema（基于 [schemars](https://crates.io/crates/schemars)）
-2. Schema 按类型缓存（线程本地存储，零锁竞争）
-3. Schema 根据目标提供商进行转换：
-   - **OpenAI**：封装在 `response_format` 中，启用严格模式（`additionalProperties: false`，所有字段必填）
-   - **Anthropic**：封装为 `tool`，设置 `input_schema`，通过 `tool_choice` 强制调用
-   - **Gemini**：作为 `response_schema` 传入，设置 `response_mime_type: "application/json"`
-4. LLM 被约束为生成符合 Schema 的合法 JSON
-5. 响应 JSON 若格式有误（尾部逗号、单引号、未加引号的键名、Markdown 围栏）会自动修复
-6. 响应通过 `serde_json::from_str::<T>()` 反序列化
-7. 若实现了 `Validate` trait 或设置了 `.validate()` 闭包，则执行校验
-8. 解析或校验失败时，将错误反馈发回 LLM 并重试
+**流式输出时取部分值**（1,247 字节的回答分 308 段、每段 4 字节到达，每段到达后都取一次部分值，下表是整个流的总耗时）：
 
-<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
+| 做法 | 整个流 |
+|---|---:|
+| instructors 1.5 的 `PartialParser`：喂入每一段，读借用的视图 | 5.5 µs |
+| 同上，另外每段之后复制成一个 `serde_json::Value` | 307 µs |
+| 每段之后重新解析整个缓冲区，得到 `Value`（rstructor 0.6.0 的做法）| 677 µs |
+| 每段之后对整个缓冲区运行 partial-json-fixer 0.5.5，再解析 | 735 µs |
+| 每段之后对整个缓冲区运行 jsonrepair 0.1.0，再解析 | 2,035 µs |
+| 作为参照：对完整回答做一次 `serde_json::from_str::<Invoice>` | 1.6 µs |
 
-## 生态系统
-
-[tiktoken](https://crates.io/crates/tiktoken) · [@goliapkg/tiktoken-wasm](https://www.npmjs.com/package/@goliapkg/tiktoken-wasm) · **instructors** · [chunkedrs](https://crates.io/crates/chunkedrs) · [embedrs](https://crates.io/crates/embedrs)
-
-<!-- ECOSYSTEM END -->
+不管字节怎么切分，解析器做的工作都一样，所以开销和流的长度成正比；每段都重新解析的做法，开销和长度的平方成正比。
 
 ## 许可证
 
-[MIT](LICENSE)
+MIT 或 Apache-2.0，任选其一：[MIT](LICENSE-MIT)、[Apache-2.0](LICENSE-APACHE)。
