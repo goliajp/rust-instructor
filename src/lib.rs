@@ -77,6 +77,9 @@ pub use exchange::{Exchange, Extracted, RetryPolicy, Step};
 pub use extract::Extract;
 #[cfg(feature = "derive")]
 pub use instructors_derive::Schema;
+// unit tests derive schemas in every feature combination
+#[cfg(all(test, not(feature = "derive")))]
+use instructors_derive::Schema;
 pub use message::{Message, Part, Role};
 pub use partial::PartialValue;
 pub use reasoning::{Effort, Reasoning};
