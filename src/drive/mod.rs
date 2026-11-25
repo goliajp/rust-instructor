@@ -98,7 +98,7 @@ pub(crate) async fn run<O: DeserializeOwned>(
     out.unwrap_or_else(|| {
         Err(Error::Timeout {
             after: timeout,
-            usage: ex.usage(),
+            usage: Box::new(ex.usage()),
         })
     })
 }

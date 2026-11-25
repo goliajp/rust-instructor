@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use super::*;
 
-fn usage(requests: u32) -> Usage {
-    Usage {
+fn usage(requests: u32) -> Box<Usage> {
+    Box::new(Usage {
         requests,
         ..Usage::default()
-    }
+    })
 }
 
 #[test]

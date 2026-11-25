@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Processing {} reviews concurrently...\n", reviews.len());
 
     let results = client
-        .extract_batch::<ProductReview>(reviews)
+        .extract_batch::<ProductReview>(reviews.into_iter().map(String::from))
         .concurrency(5)
         .validate(|r: &ProductReview| {
             if !(0.0..=10.0).contains(&r.score) {

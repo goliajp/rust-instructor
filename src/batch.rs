@@ -26,7 +26,7 @@ use crate::validate::ValidationError;
 /// # async fn run() {
 /// let client = Client::openai("sk-...");
 /// let results = client
-///     .extract_batch::<Contact>(["John Doe", "Jane Smith"])
+///     .extract_batch::<Contact>(vec!["John Doe".into(), "Jane Smith".into()])
 ///     .concurrency(5)
 ///     .await;
 /// for r in results {

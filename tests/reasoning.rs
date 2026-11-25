@@ -140,7 +140,7 @@ async fn batch_passes_reasoning_through() {
     let (base, log) = start(vec![Reply::json("/chat", 200, openai_ok(OK))]).await;
     let c = Client::openai_compatible("k", base);
     let results = c
-        .extract_batch::<Contact>(vec!["a", "b"])
+        .extract_batch::<Contact>(vec!["a".into(), "b".into()])
         .reasoning(Reasoning::Effort(Effort::High))
         .run()
         .await;

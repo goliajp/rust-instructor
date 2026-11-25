@@ -50,14 +50,16 @@ pub enum Step<T> {
 pub(crate) type Validator<O> =
     std::sync::Arc<dyn Fn(&O) -> std::result::Result<(), ValidationError> + Send + Sync>;
 
+type Hook<F> = Option<Box<F>>;
+
 #[derive(Default)]
 pub(crate) struct Hooks {
-    pub(crate) on_request: Option<Box<dyn Fn(&HttpRequest) + Send + Sync>>,
-    pub(crate) on_response: Option<Box<dyn Fn(&Usage) + Send + Sync>>,
-    pub(crate) on_delta: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    pub(crate) on_partial: Option<Box<dyn Fn(PartialValue<'_>) + Send + Sync>>,
+    pub(crate) on_request: Hook<dyn Fn(&HttpRequest) + Send + Sync>,
+    pub(crate) on_response: Hook<dyn Fn(&Usage) + Send + Sync>,
+    pub(crate) on_delta: Hook<dyn Fn(&str) + Send + Sync>,
+    pub(crate) on_partial: Hook<dyn Fn(PartialValue<'_>) + Send + Sync>,
     /// Receives each list item's JSON once it is complete.
-    pub(crate) on_item: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    pub(crate) on_item: Hook<dyn Fn(&str) + Send + Sync>,
 }
 
 impl Hooks {
@@ -205,7 +207,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                 Step::Done(Err(Error::Transport {
                     provider: self.name(),
                     source: TransportError::new("next() called before the response was received"),
-                    usage: self.usage(),
+                    usage: Box::new(self.usage()),
                 }))
             }
             State::Done(r) => {
@@ -214,7 +216,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                     Err(Error::Transport {
                         provider: self.name(),
                         source: TransportError::new("the exchange already finished"),
-                        usage: self.usage(),
+                        usage: Box::new(self.usage()),
                     })
                 }))
             }
@@ -266,7 +268,7 @@ impl<O: DeserializeOwned> Exchange<O> {
         self.fail(Error::Transport {
             provider: self.name(),
             source: error,
-            usage: Usage::default(),
+            usage: Box::default(),
         });
     }
 
@@ -286,7 +288,7 @@ impl<O: DeserializeOwned> Exchange<O> {
             status,
             message: String::from_utf8_lossy(body).into_owned(),
             retry_after: server,
-            usage: Usage::default(),
+            usage: Box::default(),
         });
     }
 
@@ -317,7 +319,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                     provider: self.name(),
                     reason,
                     raw: answer.content,
-                    usage: Usage::default(),
+                    usage: Box::default(),
                 });
             }
             Err(parse::Bad::Invalid(m)) => (m, false),
@@ -348,7 +350,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                 provider,
                 attempts,
                 message: problem,
-                usage: Usage::default(),
+                usage: Box::default(),
             }
         } else {
             Error::Parse {
@@ -356,7 +358,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                 attempts,
                 message: problem,
                 raw: answer.content,
-                usage: Usage::default(),
+                usage: Box::default(),
             }
         });
     }
@@ -385,7 +387,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                 Error::Refusal {
                     provider,
                     text,
-                    usage: Usage::default(),
+                    usage: Box::default(),
                 }
             }
             Fail::Malformed(message) => Error::Api {
@@ -393,7 +395,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                 status,
                 message,
                 retry_after: None,
-                usage: Usage::default(),
+                usage: Box::default(),
             },
             Fail::Unsupported(what) => Error::Unsupported { provider, what },
         };
@@ -407,7 +409,7 @@ impl<O: DeserializeOwned> Exchange<O> {
         self.total.merge(&self.usage);
         self.usage = Usage::default();
         if let Some(u) = err.usage_mut() {
-            *u = self.total.clone();
+            u.clone_from(&self.total);
         }
         let err = match self.failed.take() {
             None => err,

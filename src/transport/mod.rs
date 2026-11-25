@@ -10,6 +10,8 @@ use std::time::Duration;
 
 #[cfg(feature = "reqwest")]
 pub(crate) use self::reqwest::shared;
+#[cfg(feature = "reqwest")]
+pub use self::reqwest::ReqwestTransport;
 use crate::error::TransportError;
 use crate::wire::{Headers, HttpRequest};
 

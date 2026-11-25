@@ -28,7 +28,6 @@ struct Node {
     children: Vec<Node>,
 }
 
-#[expect(dead_code, reason = "fields are only filled by deserialization")]
 #[derive(Debug, Deserialize, schemars::JsonSchema, Schema)]
 enum Currency {
     Usd,

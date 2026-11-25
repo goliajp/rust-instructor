@@ -54,7 +54,7 @@ async fn batch_basic() {
         .await;
 
     let client = Client::openai_compatible("key", server.uri());
-    let prompts = vec!["prompt1", "prompt2", "prompt3"];
+    let prompts: Vec<String> = vec!["prompt1".into(), "prompt2".into(), "prompt3".into()];
     let results = client
         .extract_batch::<Contact>(prompts)
         .concurrency(3)
@@ -83,7 +83,7 @@ async fn batch_with_model() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<Contact>(vec!["a", "b"])
+        .extract_batch::<Contact>(vec!["a".into(), "b".into()])
         .model("gpt-5.6-luna")
         .system("extract")
         .temperature(0.5)
@@ -109,7 +109,7 @@ async fn batch_partial_failure() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<Contact>(vec!["a", "b"])
+        .extract_batch::<Contact>(vec!["a".into(), "b".into()])
         .max_attempts(1)
         .concurrency(1)
         .run()
@@ -135,7 +135,7 @@ async fn batch_with_validation() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<StrictUser>(vec!["a", "b"])
+        .extract_batch::<StrictUser>(vec!["a".into(), "b".into()])
         .validate(|u: &StrictUser| {
             if u.age > 100 {
                 Err("too old".into())
@@ -165,7 +165,7 @@ async fn batch_validation_fails() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<StrictUser>(vec!["a"])
+        .extract_batch::<StrictUser>(vec!["a".into()])
         .validate(|u: &StrictUser| {
             if u.age > 150 {
                 Err("unrealistic".into())
@@ -208,7 +208,7 @@ async fn batch_concurrency_one() {
 
     let client = Client::openai_compatible("key", server.uri());
     let results = client
-        .extract_batch::<Contact>(vec!["a", "b", "c"])
+        .extract_batch::<Contact>(vec!["a".into(), "b".into(), "c".into()])
         .concurrency(1) // sequential
         .run()
         .await;
@@ -242,7 +242,7 @@ async fn batch_concurrency_one_with_failure() {
 
     let client = Client::openai_compatible("key", server.uri()).with_retry(RetryPolicy::none());
     let results = client
-        .extract_batch::<Contact>(vec!["good", "bad"])
+        .extract_batch::<Contact>(vec!["good".into(), "bad".into()])
         .concurrency(1)
         .max_attempts(1)
         .run()

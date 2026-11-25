@@ -277,9 +277,9 @@ impl Client {
     /// Extract a `T` from each prompt, a few at a time.
     pub fn extract_batch<T: DeserializeOwned + Schema>(
         &self,
-        prompts: impl IntoIterator<Item = impl Into<String>>,
+        prompts: impl IntoIterator<Item = String>,
     ) -> Batch<'_, T> {
-        Batch::new(self, prompts.into_iter().map(Into::into).collect())
+        Batch::new(self, prompts.into_iter().collect())
     }
 }
 

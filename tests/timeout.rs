@@ -128,7 +128,7 @@ async fn timeout_covers_backoff() {
 async fn timeout_error_display() {
     let err = Error::Timeout {
         after: Duration::from_secs(60),
-        usage: instructors::Usage::default(),
+        usage: Box::default(),
     };
     let s = err.to_string();
     assert!(s.contains("timed out"));

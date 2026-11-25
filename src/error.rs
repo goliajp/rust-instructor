@@ -7,7 +7,7 @@ use crate::usage::Usage;
 ///
 /// Every variant that comes after a request carries the [`Usage`] spent so
 /// far, so a failed extraction still reports what it cost
-/// ([`Error::usage`]).
+/// ([`Error::usage`]). It is boxed to keep `Result<T, Error>` small.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum Error {
@@ -15,7 +15,7 @@ pub enum Error {
     Transport {
         provider: &'static str,
         source: TransportError,
-        usage: Usage,
+        usage: Box<Usage>,
     },
     /// The provider answered with a non-success HTTP status.
     Api {
@@ -23,14 +23,14 @@ pub enum Error {
         status: u16,
         message: String,
         retry_after: Option<Duration>,
-        usage: Usage,
+        usage: Box<Usage>,
     },
     /// The model declined to answer: an OpenAI `refusal`, an Anthropic
     /// `stop_reason: refusal`, a Gemini safety stop or blocked prompt.
     Refusal {
         provider: &'static str,
         text: String,
-        usage: Usage,
+        usage: Box<Usage>,
     },
     /// The answer hit the output token limit and did not parse. `raw` is
     /// what arrived.
@@ -38,7 +38,7 @@ pub enum Error {
         provider: &'static str,
         reason: String,
         raw: String,
-        usage: Usage,
+        usage: Box<Usage>,
     },
     /// The answer did not parse into the type after every attempt.
     Parse {
@@ -46,14 +46,14 @@ pub enum Error {
         attempts: u32,
         message: String,
         raw: String,
-        usage: Usage,
+        usage: Box<Usage>,
     },
     /// The answer parsed but validation rejected it on every attempt.
     Validation {
         provider: &'static str,
         attempts: u32,
         message: String,
-        usage: Usage,
+        usage: Box<Usage>,
     },
     /// A setting the provider has no parameter for, such as
     /// `Reasoning::Budget` on OpenAI. Nothing was sent.
@@ -62,7 +62,7 @@ pub enum Error {
         what: String,
     },
     /// The overall timeout passed.
-    Timeout { after: Duration, usage: Usage },
+    Timeout { after: Duration, usage: Box<Usage> },
     /// The client has no transport: the crate was built without the
     /// `reqwest` feature and no `with_transport` was given.
     NoTransport,
