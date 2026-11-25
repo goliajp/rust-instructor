@@ -7,7 +7,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
-> **1.5 に上げる場合**：API は追加のみですが、送信するリクエストが 4 か所変わります。`Client::anthropic` はスキーマを強制ツール呼び出しではなく構造化出力（`output_config.format`）で送ります。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 以降は強制ツール呼び出しを拒否するためです。以前のリクエストに戻すには `.with_anthropic_tool_use()` を呼びます。`extract_many` は配列そのものではなく `{"items": [...]}` を求めます。最大出力トークン数の設定が OpenAI 系の API にも送られるようになりました。Gemini の API キーは URL ではなく `x-goog-api-key` ヘッダーで送ります。詳細は [CHANGELOG](CHANGELOG.md#unreleased) を参照してください。
+> **1.5 への更新**：API は追加のみですが、送信するリクエストが 4 か所変わります。`Client::anthropic` はスキーマを強制ツール呼び出しではなく構造化出力（`output_config.format`）で送ります。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 以降は強制ツール呼び出しを拒否するためです。以前のリクエストに戻すには `.with_anthropic_tool_use()` を呼びます。`extract_many` は配列そのものではなく `{"items": [...]}` を求めます。最大出力トークン数の設定が OpenAI 系の API にも送られるようになりました。Gemini の API キーは URL ではなく `x-goog-api-key` ヘッダーで送ります。詳細は [CHANGELOG](CHANGELOG.md#unreleased) を参照してください。
 
 LLM から型付きの構造化出力を受け取る Rust のライブラリです。型に `Deserialize` と `JsonSchema` を derive して `extract` を呼ぶと、その型の値が返ります。各プロバイダーが強制できる形で型の JSON スキーマを送り、壊れた JSON は修復し、パースや独自の検証に失敗したときはエラーをモデルに返して再度尋ねます。設計は Python の [instructor](https://github.com/567-labs/instructor) にならっています。
 
