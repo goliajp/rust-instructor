@@ -411,6 +411,9 @@ fn generic_instances_are_distinct_and_stable() {
 #[path = "order_tests.rs"]
 mod order;
 
+#[path = "serde_names_tests.rs"]
+mod serde_names;
+
 use order::keys;
 
 #[cfg(feature = "schemars")]
