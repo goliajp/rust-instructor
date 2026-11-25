@@ -195,7 +195,9 @@ async fn api_error_status() {
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
-        Error::Api { status, message, .. } => {
+        Error::Api {
+            status, message, ..
+        } => {
             assert_eq!(status, 429);
             assert!(message.contains("rate limited"));
         }
@@ -475,7 +477,9 @@ async fn empty_choices_error() {
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     // a malformed envelope is an api error carrying the http status
-    assert!(matches!(err, Error::Api { status: 200, ref message, .. } if message.contains("no choices")));
+    assert!(
+        matches!(err, Error::Api { status: 200, ref message, .. } if message.contains("no choices"))
+    );
 }
 
 #[tokio::test]

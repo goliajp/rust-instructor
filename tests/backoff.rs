@@ -175,11 +175,11 @@ async fn exhaust_http_retries_then_fallback() {
 
     let client = Client::openai_compatible("key", primary.uri())
         .with_retry(
-        RetryPolicy::new()
-            .base_delay(std::time::Duration::from_millis(10))
-            .max_retries(2)
-            .jitter(false),
-    )
+            RetryPolicy::new()
+                .base_delay(std::time::Duration::from_millis(10))
+                .max_retries(2)
+                .jitter(false),
+        )
         .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.extract::<Contact>("test").await.unwrap();
@@ -317,5 +317,9 @@ async fn retry_after_is_honoured() {
     let start = Instant::now();
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Late");
-    assert!(start.elapsed() >= Duration::from_millis(250), "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() >= Duration::from_millis(250),
+        "{:?}",
+        start.elapsed()
+    );
 }

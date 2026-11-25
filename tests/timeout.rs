@@ -113,11 +113,11 @@ async fn timeout_covers_backoff() {
 
     let client = Client::openai_compatible("key", server.uri())
         .with_retry(
-        RetryPolicy::new()
-            .base_delay(Duration::from_millis(200))
-            .max_retries(10)
-            .jitter(false),
-    )
+            RetryPolicy::new()
+                .base_delay(Duration::from_millis(200))
+                .max_retries(10)
+                .jitter(false),
+        )
         .with_timeout(Duration::from_millis(100));
 
     let err = client.extract::<Contact>("test").await.unwrap_err();

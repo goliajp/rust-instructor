@@ -11,26 +11,28 @@ use instructors::prelude::*;
     dead_code,
     reason = "fields are only filled by deserialization and shown through Debug"
 )]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let client = Client::openai(&api_key).with_model("gpt-5.6-luna");
 
     let result = client
         .extract::<Contact>("John Doe, john@example.com")
-        .on_request(|model, prompt| {
-            println!("[request] model={model}, prompt_len={}", prompt.len());
+        .on_request(|req| {
+            println!("[request] {} ({} bytes)", req.url, req.body.len());
         })
         .on_response(|usage| {
             println!(
                 "[response] tokens={}, retries={}, cost={:?}",
-                usage.total_tokens, usage.retries, usage.cost
+                usage.total_tokens(),
+                usage.retries(),
+                usage.cost
             );
         })
         .await?;

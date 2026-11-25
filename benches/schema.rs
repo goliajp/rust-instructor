@@ -1,18 +1,20 @@
-use criterion::{Criterion, criterion_group, criterion_main};
-use schemars::JsonSchema;
-use serde::Deserialize;
-use std::any::TypeId;
+// Per-request client work without I/O, through the public sans-IO exchange:
+// building the request (cached schema bytes spliced into the body) and a
+// full round of request + canned response + parse.
+
 use std::collections::HashMap;
 use std::hint::black_box;
-use std::sync::{Mutex, OnceLock};
 
-// test structs of varying complexity
+use criterion::{Criterion, criterion_group, criterion_main};
+use instructors::{Client, Headers, Schema, Step};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 #[expect(
     dead_code,
-    reason = "the benches only build the schema; fields are never read"
+    reason = "the benches only build and parse; fields are never read"
 )]
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Schema)]
 struct Simple {
     name: String,
     age: u32,
@@ -20,9 +22,9 @@ struct Simple {
 
 #[expect(
     dead_code,
-    reason = "the benches only build the schema; fields are never read"
+    reason = "the benches only build and parse; fields are never read"
 )]
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Schema)]
 struct Medium {
     name: String,
     email: Option<String>,
@@ -34,9 +36,9 @@ struct Medium {
 
 #[expect(
     dead_code,
-    reason = "the benches only build the schema; fields are never read"
+    reason = "the benches only build and parse; fields are never read"
 )]
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Schema)]
 struct Address {
     street: String,
     city: String,
@@ -47,9 +49,9 @@ struct Address {
 
 #[expect(
     dead_code,
-    reason = "the benches only build the schema; fields are never read"
+    reason = "the benches only build and parse; fields are never read"
 )]
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Schema)]
 struct Complex {
     first_name: String,
     last_name: String,
@@ -61,102 +63,73 @@ struct Complex {
     metadata: HashMap<String, String>,
 }
 
-// approach 1: no cache (baseline)
-fn schema_no_cache<T: JsonSchema>() -> serde_json::Value {
-    let schema = schemars::schema_for!(T);
-    serde_json::to_value(&schema).unwrap()
-}
+const SIMPLE: &str = r#"{"name": "John Doe", "age": 30}"#;
+const MEDIUM: &str = r#"{"name": "John", "email": "john@test.com", "phone": "+1234", "age": 30, "active": true, "tags": ["dev", "rust"]}"#;
+const COMPLEX: &str = r#"{"first_name": "John", "last_name": "Doe", "email": "john@test.com", "phone": "+1234", "age": 30, "address": {"street": "123 Main", "city": "NYC", "state": "NY", "zip": "10001", "country": "US"}, "tags": ["dev"], "metadata": {"role": "eng"}}"#;
 
-// approach 2: global OnceLock + Mutex<HashMap<TypeId>>
-fn schema_oncelock_map<T: JsonSchema + 'static>() -> serde_json::Value {
-    static CACHE: OnceLock<Mutex<HashMap<TypeId, serde_json::Value>>> = OnceLock::new();
-    let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = map.lock().unwrap();
-    guard
-        .entry(TypeId::of::<T>())
-        .or_insert_with(|| {
-            let schema = schemars::schema_for!(T);
-            serde_json::to_value(&schema).unwrap()
-        })
-        .clone()
-}
-
-// approach 3: thread_local + RefCell<HashMap<TypeId>>
-fn schema_thread_local<T: JsonSchema + 'static>() -> serde_json::Value {
-    thread_local! {
-        static CACHE: std::cell::RefCell<HashMap<TypeId, serde_json::Value>> =
-            std::cell::RefCell::new(HashMap::new());
+fn request<T: DeserializeOwned + Schema>(client: &Client) -> usize {
+    match client.extract::<T>("John Doe, 30").exchange().next() {
+        Step::Send(req) => req.body.len(),
+        _ => unreachable!("the first step sends"),
     }
-    CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        cache
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| {
-                let schema = schemars::schema_for!(T);
-                serde_json::to_value(&schema).unwrap()
-            })
-            .clone()
-    })
 }
 
-fn bench_schema_generation(c: &mut Criterion) {
-    let mut group = c.benchmark_group("schema_generation");
+fn openai_body(content: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 50, "completion_tokens": 20}
+    }))
+    .unwrap()
+}
 
-    // simple struct
-    group.bench_function("simple/no_cache", |b| {
-        b.iter(|| black_box(schema_no_cache::<Simple>()))
-    });
-    group.bench_function("simple/oncelock_map", |b| {
-        b.iter(|| black_box(schema_oncelock_map::<Simple>()))
-    });
-    group.bench_function("simple/thread_local", |b| {
-        b.iter(|| black_box(schema_thread_local::<Simple>()))
-    });
+fn round<T: DeserializeOwned + Schema>(client: &Client, body: &[u8]) -> T {
+    let mut ex = client.extract::<T>("John Doe, 30").exchange();
+    let Step::Send(_) = ex.next() else {
+        unreachable!("the first step sends")
+    };
+    ex.receive(200, &Headers::new(), body);
+    match ex.next() {
+        Step::Done(Ok(r)) => r.value,
+        _ => unreachable!("the canned answer parses"),
+    }
+}
 
-    // medium struct
-    group.bench_function("medium/no_cache", |b| {
-        b.iter(|| black_box(schema_no_cache::<Medium>()))
-    });
-    group.bench_function("medium/oncelock_map", |b| {
-        b.iter(|| black_box(schema_oncelock_map::<Medium>()))
-    });
-    group.bench_function("medium/thread_local", |b| {
-        b.iter(|| black_box(schema_thread_local::<Medium>()))
-    });
-
-    // complex struct
-    group.bench_function("complex/no_cache", |b| {
-        b.iter(|| black_box(schema_no_cache::<Complex>()))
-    });
-    group.bench_function("complex/oncelock_map", |b| {
-        b.iter(|| black_box(schema_oncelock_map::<Complex>()))
-    });
-    group.bench_function("complex/thread_local", |b| {
-        b.iter(|| black_box(schema_thread_local::<Complex>()))
-    });
-
+fn bench_request(c: &mut Criterion) {
+    let mut group = c.benchmark_group("request");
+    for (name, client) in [
+        ("openai", Client::openai("k")),
+        ("anthropic", Client::anthropic("k")),
+        ("gemini", Client::gemini("k")),
+    ] {
+        group.bench_function(format!("{name}/simple"), |b| {
+            b.iter(|| black_box(request::<Simple>(&client)))
+        });
+        group.bench_function(format!("{name}/complex"), |b| {
+            b.iter(|| black_box(request::<Complex>(&client)))
+        });
+    }
     group.finish();
 }
 
-fn bench_json_parse(c: &mut Criterion) {
-    let mut group = c.benchmark_group("json_parse");
-
-    let simple_json = r#"{"name": "John Doe", "age": 30}"#;
-    let medium_json = r#"{"name": "John", "email": "john@test.com", "phone": "+1234", "age": 30, "active": true, "tags": ["dev", "rust"]}"#;
-    let complex_json = r#"{"first_name": "John", "last_name": "Doe", "email": "john@test.com", "phone": "+1234", "age": 30, "address": {"street": "123 Main", "city": "NYC", "state": "NY", "zip": "10001", "country": "US"}, "tags": ["dev"], "metadata": {"role": "eng"}}"#;
-
+fn bench_round(c: &mut Criterion) {
+    let mut group = c.benchmark_group("round");
+    let client = Client::openai("k");
+    let (s, m, x) = (
+        openai_body(SIMPLE),
+        openai_body(MEDIUM),
+        openai_body(COMPLEX),
+    );
     group.bench_function("simple", |b| {
-        b.iter(|| black_box(serde_json::from_str::<Simple>(simple_json).unwrap()))
+        b.iter(|| black_box(round::<Simple>(&client, &s)))
     });
     group.bench_function("medium", |b| {
-        b.iter(|| black_box(serde_json::from_str::<Medium>(medium_json).unwrap()))
+        b.iter(|| black_box(round::<Medium>(&client, &m)))
     });
     group.bench_function("complex", |b| {
-        b.iter(|| black_box(serde_json::from_str::<Complex>(complex_json).unwrap()))
+        b.iter(|| black_box(round::<Complex>(&client, &x)))
     });
-
     group.finish();
 }
 
-criterion_group!(benches, bench_schema_generation, bench_json_parse);
+criterion_group!(benches, bench_request, bench_round);
 criterion_main!(benches);

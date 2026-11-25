@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use instructors::{Client, Message, Part, Role, Validate, ValidationError};
 use instructors::Schema;
+use instructors::{Client, Message, Part, Role, Validate, ValidationError};
 use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

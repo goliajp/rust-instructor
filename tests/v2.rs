@@ -40,7 +40,10 @@ fn pieces(s: &str) -> Vec<String> {
         .collect()
 }
 
-fn deltas() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str) + Send + Sync + 'static) {
+fn deltas() -> (
+    Arc<Mutex<Vec<String>>>,
+    impl Fn(&str) + Send + Sync + 'static,
+) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s2 = seen.clone();
     (seen, move |d: &str| s2.lock().unwrap().push(d.to_owned()))
@@ -123,11 +126,13 @@ async fn anthropic_streams() {
     let mut events = vec![json!({"type": "message_start", "message": {"usage": {
         "input_tokens": 3, "cache_read_input_tokens": 4, "cache_creation_input_tokens": 5
     }}})];
-    events.extend(pieces(ANSWER).into_iter().map(|p| {
-        json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": p}})
-    }));
-    events.push(json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
-                       "usage": {"output_tokens": 6}}));
+    events.extend(pieces(ANSWER).into_iter().map(
+        |p| json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": p}}),
+    ));
+    events.push(
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                       "usage": {"output_tokens": 6}}),
+    );
     let (base, _) = start(vec![Reply::sse("/messages", sse(&events))]).await;
     let (seen, hook) = deltas();
     let r = Client::anthropic_compatible("k", base)
@@ -202,7 +207,12 @@ fn cut(content: &str) -> Value {
 #[tokio::test]
 #[ignore = "bug: json::repair (jsonrepair backend) turns a cut key into `\"ema\":}`, which does not parse"]
 async fn accept_truncated_returns_the_complete_fields() {
-    let (base, _) = start(vec![Reply::json("/chat", 200, cut(r#"{"name":"Ada","ema"#))]).await;
+    let (base, _) = start(vec![Reply::json(
+        "/chat",
+        200,
+        cut(r#"{"name":"Ada","ema"#),
+    )])
+    .await;
     let r = Client::openai_compatible("k", base)
         .extract::<Contact>("x")
         .accept_truncated()
@@ -220,7 +230,12 @@ async fn accept_truncated_returns_the_complete_fields() {
 
 #[tokio::test]
 async fn truncation_is_an_error_unless_accepted() {
-    let (base, log) = start(vec![Reply::json("/chat", 200, cut(r#"{"name":"Ada","ema"#))]).await;
+    let (base, log) = start(vec![Reply::json(
+        "/chat",
+        200,
+        cut(r#"{"name":"Ada","ema"#),
+    )])
+    .await;
     let err = Client::openai_compatible("k", base)
         .extract::<Contact>("x")
         .await
@@ -292,10 +307,13 @@ async fn fallback_usage_and_source_chain() {
     assert!(cur.to_string().contains("did not parse"), "{cur}");
 }
 
+// status and body of one reply
+type CannedReply = (u16, Vec<u8>);
+
 /// Replies from a list, records requests, sleeps not at all.
 #[derive(Clone, Default)]
 struct Canned {
-    replies: Arc<Mutex<Vec<(u16, Vec<u8>)>>>,
+    replies: Arc<Mutex<Vec<CannedReply>>>,
     sent: Arc<Mutex<Vec<HttpRequest>>>,
     slept: Arc<Mutex<Vec<Duration>>>,
 }
@@ -351,12 +369,7 @@ fn custom_transport_without_a_runtime() {
     assert_eq!(r.value.name, "Ada");
     assert_eq!(t.sent.lock().unwrap().len(), 2);
     // the overall timeout starts a sleep too; the retry wait is the other
-    assert!(
-        t.slept
-            .lock()
-            .unwrap()
-            .contains(&Duration::from_millis(7))
-    );
+    assert!(t.slept.lock().unwrap().contains(&Duration::from_millis(7)));
     let sent = t.sent.lock().unwrap();
     assert_eq!(sent[0].url, "https://api.openai.com/v1/chat/completions");
     assert_eq!(sent[0].headers.get("authorization"), Some("Bearer k"));
@@ -422,7 +435,11 @@ fn json_object_hosts_carry_the_schema_in_the_prompt() {
         "https://open.bigmodel.cn/api/paas/v4",
     ] {
         let body = first_request(&Client::openai_compatible("k", url));
-        assert_eq!(body["response_format"], json!({"type": "json_object"}), "{url}");
+        assert_eq!(
+            body["response_format"],
+            json!({"type": "json_object"}),
+            "{url}"
+        );
         let system = body["messages"][0]["content"].as_str().unwrap();
         assert!(system.contains("JSON"), "{url}");
         assert!(system.contains(r#""email""#), "{url}: {system}");

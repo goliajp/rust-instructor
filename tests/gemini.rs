@@ -1,5 +1,5 @@
-use instructors::{Client, Error, Part};
 use instructors::Schema;
+use instructors::{Client, Error, Part};
 use serde::Deserialize;
 use wiremock::matchers::{header, method, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -123,7 +123,9 @@ async fn api_error_status() {
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
-        Error::Api { status, message, .. } => {
+        Error::Api {
+            status, message, ..
+        } => {
             assert_eq!(status, 400);
             assert!(message.contains("bad request"));
         }

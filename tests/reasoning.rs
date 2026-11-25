@@ -176,7 +176,12 @@ async fn on_partial_sees_the_value_grow() {
     let seen2 = seen.clone();
     let r = Client::openai_compatible("k", base)
         .extract::<Article>("x")
-        .on_partial(move |v| seen2.lock().unwrap().push(serde_json::from_str::<serde_json::Value>(&v.to_json()).unwrap()))
+        .on_partial(move |v| {
+            seen2
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str::<serde_json::Value>(&v.to_json()).unwrap())
+        })
         .await
         .unwrap();
     assert_eq!(r.value.tags, ["rust", "llm"]);
@@ -200,7 +205,10 @@ async fn on_partial_for_extract_many_shows_the_list() {
     let last2 = last.clone();
     let r = Client::openai_compatible("k", base)
         .extract_many::<Contact>("x")
-        .on_partial(move |v| *last2.lock().unwrap() = Some(serde_json::from_str::<serde_json::Value>(&v.to_json()).unwrap()))
+        .on_partial(move |v| {
+            *last2.lock().unwrap() =
+                Some(serde_json::from_str::<serde_json::Value>(&v.to_json()).unwrap())
+        })
         .await
         .unwrap();
     assert_eq!(r.value.len(), 2);

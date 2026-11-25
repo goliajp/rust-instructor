@@ -195,7 +195,10 @@ async fn fallback_sends_its_own_model_and_reports_every_error() {
     assert!(texts[1].contains("primary down"), "{texts:?}");
     assert!(matches!(err, instructors::Error::Fallback { .. }));
     let links: Vec<&instructors::Error> = err.chain().collect();
-    assert!(matches!(links[1], instructors::Error::Api { status: 500, .. }));
+    assert!(matches!(
+        links[1],
+        instructors::Error::Api { status: 500, .. }
+    ));
 }
 
 #[tokio::test]

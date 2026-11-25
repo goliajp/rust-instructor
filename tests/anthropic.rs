@@ -105,7 +105,9 @@ async fn api_error_401() {
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
-        Error::Api { status, message, .. } => {
+        Error::Api {
+            status, message, ..
+        } => {
             assert_eq!(status, 401);
             assert!(message.contains("invalid api key"));
         }
@@ -126,8 +128,7 @@ async fn api_error_429() {
         .mount(&server)
         .await;
 
-    let client =
-        Client::anthropic_compatible("key", server.uri()).with_retry(RetryPolicy::none());
+    let client = Client::anthropic_compatible("key", server.uri()).with_retry(RetryPolicy::none());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -490,9 +491,10 @@ async fn cross_provider_fallback_openai_to_anthropic() {
 
     let client = Client::openai_compatible("key", openai_server.uri())
         .with_retry(RetryPolicy::none())
-        .with_fallback(
-        Client::anthropic_compatible("ant-key", anthropic_server.uri()),
-    );
+        .with_fallback(Client::anthropic_compatible(
+            "ant-key",
+            anthropic_server.uri(),
+        ));
 
     let result = client
         .extract::<Contact>("test")

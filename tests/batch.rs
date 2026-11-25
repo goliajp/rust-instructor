@@ -185,7 +185,10 @@ async fn batch_validation_fails() {
 async fn batch_empty() {
     let server = MockServer::start().await;
     let client = Client::openai_compatible("key", server.uri());
-    let results = client.extract_batch::<Contact>(Vec::<String>::new()).run().await;
+    let results = client
+        .extract_batch::<Contact>(Vec::<String>::new())
+        .run()
+        .await;
 
     assert!(results.is_empty());
 }
