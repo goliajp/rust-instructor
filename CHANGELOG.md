@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.5.0] - 2026-11-25
 
 ### Upgrading from 1.4
 

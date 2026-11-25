@@ -7,7 +7,7 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-> **Upgrading to 1.5?** The API only grows, but four requests change on the wire. `Client::anthropic` now sends the schema as structured output (`output_config.format`) instead of a forced tool call, because Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 and later reject forced tool calls; `.with_anthropic_tool_use()` restores the old request. `extract_many` asks for `{"items": [...]}` instead of a bare array. A max-tokens setting now reaches OpenAI-family APIs. The Gemini key moves from the URL to the `x-goog-api-key` header. Details: [CHANGELOG](CHANGELOG.md#unreleased).
+> **Upgrading to 1.5?** The API only grows, but four requests change on the wire. `Client::anthropic` now sends the schema as structured output (`output_config.format`) instead of a forced tool call, because Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 and later reject forced tool calls; `.with_anthropic_tool_use()` restores the old request. `extract_many` asks for `{"items": [...]}` instead of a bare array. A max-tokens setting now reaches OpenAI-family APIs. The Gemini key moves from the URL to the `x-goog-api-key` header. Details: [CHANGELOG](CHANGELOG.md#150---2026-11-25).
 
 Typed structured output from LLMs, in Rust. Derive `Deserialize` and `JsonSchema` on a type, call `extract`, and get a value of that type back. The crate sends the type's JSON schema in the form each provider enforces, repairs malformed JSON, and when parsing or your own validation fails, sends the error back to the model and asks again. It follows the design of Python's [instructor](https://github.com/567-labs/instructor).
 
