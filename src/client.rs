@@ -1,16 +1,13 @@
-use std::future::{Future, IntoFuture};
-use std::marker::PhantomData;
-use std::pin::Pin;
 use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
 use crate::backoff::BackoffConfig;
-use crate::error::{Error, Result};
-use crate::provider::{ImageInput, Message, ProviderKind, RawResponse};
+use crate::extract::ExtractBuilder;
+use crate::provider::{OaiDialect, ProviderKind};
+use crate::reasoning::Reasoning;
 use crate::usage::Usage;
-use crate::validate::{Validate, ValidationError};
 
 /// Result of a successful extraction containing the typed value and usage info.
 #[derive(Debug, Clone)]
@@ -25,72 +22,107 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// LLM client for structured data extraction.
 ///
-/// Supports OpenAI (via structured output), Anthropic (via tool use, or native
-/// structured output with [`Client::with_anthropic_structured_output`]),
-/// Google Gemini (via response_schema), and any compatible API.
+/// Speaks three wire protocols: OpenAI Chat Completions (`response_format`
+/// with a strict JSON schema), Anthropic Messages (`output_config.format`, or
+/// a tool), and Gemini `generateContent` (`responseSchema`). The `_compatible`
+/// constructors point any of them at another base URL.
+///
+/// All clients in a process share one HTTP connection pool.
 #[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    pub(crate) http: reqwest::Client,
     pub(crate) provider: ProviderKind,
     pub(crate) default_model: Option<String>,
     pub(crate) default_system: Option<String>,
     pub(crate) default_max_retries: u32,
     pub(crate) default_temperature: Option<f64>,
-    pub(crate) default_max_tokens: u32,
+    pub(crate) default_max_tokens: Option<u32>,
     pub(crate) default_backoff: Option<BackoffConfig>,
     pub(crate) default_timeout: Duration,
-    fallbacks: Vec<Client>,
+    pub(crate) default_reasoning: Option<Reasoning>,
+    pub(crate) fallbacks: Vec<Client>,
 }
 
 impl Client {
+    fn with_provider(provider: ProviderKind, temperature: Option<f64>) -> Self {
+        Self {
+            http: crate::provider::shared_client(),
+            provider,
+            default_model: None,
+            default_system: None,
+            default_max_retries: 2,
+            default_temperature: temperature,
+            default_max_tokens: None,
+            default_backoff: None,
+            default_timeout: DEFAULT_TIMEOUT,
+            default_reasoning: None,
+            fallbacks: Vec::new(),
+        }
+    }
+
     /// Create a client for OpenAI models.
     ///
     /// ```rust,no_run
     /// let client = instructors::Client::openai("sk-...");
     /// ```
     pub fn openai(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::OpenAi {
-                api_key: api_key.into(),
-                base_url: "https://api.openai.com/v1".into(),
-            },
-            default_model: None,
-            default_system: None,
-            default_max_retries: 2,
-            default_temperature: Some(0.0),
-            default_max_tokens: 16384,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-            fallbacks: Vec::new(),
-        }
+        Self::openai_compatible(api_key, "https://api.openai.com/v1")
+    }
+
+    /// Create a client for any OpenAI-compatible Chat Completions API.
+    ///
+    /// The base URL's host selects request details for APIs this crate knows:
+    /// `api.openai.com` gets `max_completion_tokens`; DeepSeek
+    /// (`deepseek.com`), Qwen (`aliyuncs.com`), Kimi (`moonshot.cn`,
+    /// `moonshot.ai`) and GLM (`bigmodel.cn`, `z.ai`) get their own
+    /// [`Reasoning`] parameters. Any other host is treated as generic
+    /// OpenAI-compatible.
+    ///
+    /// The request always asks for a strict `json_schema` response format, so
+    /// the server must support it.
+    ///
+    /// ```rust,no_run
+    /// let client = instructors::Client::openai_compatible(
+    ///     "sk-...",
+    ///     "https://api.together.xyz/v1",
+    /// );
+    /// ```
+    pub fn openai_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into();
+        let dialect = OaiDialect::from_base_url(&base_url);
+        let provider = ProviderKind::OpenAi {
+            api_key: api_key.into(),
+            base_url,
+            dialect,
+        };
+        Self::with_provider(provider, Some(0.0))
     }
 
     /// Create a client for Anthropic models.
+    ///
+    /// Uses structured output (`output_config.format`), which every current
+    /// Claude model accepts. A type that refers to itself cannot be expressed
+    /// there, so it is sent as a tool instead.
     ///
     /// ```rust,no_run
     /// let client = instructors::Client::anthropic("sk-ant-...");
     /// ```
     pub fn anthropic(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Anthropic {
-                api_key: api_key.into(),
-                base_url: "https://api.anthropic.com/v1".into(),
-                structured_output: false,
-            },
-            default_model: None,
-            default_system: None,
-            default_max_retries: 2,
-            default_temperature: None,
-            default_max_tokens: 16384,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-            fallbacks: Vec::new(),
-        }
+        let provider = ProviderKind::Anthropic {
+            api_key: api_key.into(),
+            base_url: "https://api.anthropic.com/v1".into(),
+            structured_output: true,
+        };
+        Self::with_provider(provider, None)
     }
 
     /// Create a client for any Anthropic-compatible API.
+    ///
+    /// Sends the schema as a forced tool call, which compatible servers
+    /// support more widely than `output_config`. Call
+    /// [`with_anthropic_structured_output`](Self::with_anthropic_structured_output)
+    /// when the server is Anthropic's own API behind a proxy, since the
+    /// newest Claude models reject forced tool calls.
     ///
     /// ```rust,no_run
     /// let client = instructors::Client::anthropic_compatible(
@@ -99,48 +131,12 @@ impl Client {
     /// );
     /// ```
     pub fn anthropic_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Anthropic {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-                structured_output: false,
-            },
-            default_model: None,
-            default_system: None,
-            default_max_retries: 2,
-            default_temperature: None,
-            default_max_tokens: 16384,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-            fallbacks: Vec::new(),
-        }
-    }
-
-    /// Create a client for any OpenAI-compatible API (e.g. DeepSeek, Together, local).
-    ///
-    /// ```rust,no_run
-    /// let client = instructors::Client::openai_compatible(
-    ///     "sk-...",
-    ///     "https://api.deepseek.com/v1",
-    /// );
-    /// ```
-    pub fn openai_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::OpenAi {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-            },
-            default_model: None,
-            default_system: None,
-            default_max_retries: 2,
-            default_temperature: Some(0.0),
-            default_max_tokens: 16384,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-            fallbacks: Vec::new(),
-        }
+        let provider = ProviderKind::Anthropic {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+            structured_output: false,
+        };
+        Self::with_provider(provider, None)
     }
 
     /// Create a client for Google Gemini models.
@@ -149,21 +145,7 @@ impl Client {
     /// let client = instructors::Client::gemini("AIza...");
     /// ```
     pub fn gemini(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Gemini {
-                api_key: api_key.into(),
-                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
-            },
-            default_model: None,
-            default_system: None,
-            default_max_retries: 2,
-            default_temperature: None,
-            default_max_tokens: 16384,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-            fallbacks: Vec::new(),
-        }
+        Self::gemini_compatible(api_key, "https://generativelanguage.googleapis.com/v1beta")
     }
 
     /// Create a client for any Gemini-compatible API.
@@ -175,24 +157,16 @@ impl Client {
     /// );
     /// ```
     pub fn gemini_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Gemini {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-            },
-            default_model: None,
-            default_system: None,
-            default_max_retries: 2,
-            default_temperature: None,
-            default_max_tokens: 16384,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-            fallbacks: Vec::new(),
-        }
+        let provider = ProviderKind::Gemini {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        };
+        Self::with_provider(provider, None)
     }
 
     /// Set the default model for all extractions.
+    ///
+    /// A fallback client uses its own default model, not the primary's.
     pub fn with_model(self, model: impl Into<String>) -> Self {
         Self {
             default_model: Some(model.into()),
@@ -218,10 +192,9 @@ impl Client {
 
     /// Set the default temperature.
     ///
-    /// Not sent to Anthropic. The current Claude generations reject a
-    /// non-default `temperature` with a 400, so the Anthropic request never
-    /// carries it and this setting has no effect there. Sent to the OpenAI and
-    /// Gemini families as usual.
+    /// Not sent to Anthropic: the current Claude generations reject a
+    /// non-default `temperature` with a 400. Sent to the OpenAI and Gemini
+    /// families.
     pub fn with_temperature(self, temp: f64) -> Self {
         Self {
             default_temperature: Some(temp),
@@ -229,37 +202,44 @@ impl Client {
         }
     }
 
+    /// Set the default reasoning level. See [`Reasoning`] for what each
+    /// provider receives. Not set by default, and then nothing is sent.
+    pub fn with_reasoning(self, reasoning: Reasoning) -> Self {
+        Self {
+            default_reasoning: Some(reasoning),
+            ..self
+        }
+    }
+
     /// Add a fallback client. If the primary provider fails after exhausting
-    /// retries, the request is retried using the fallback client. Multiple
-    /// fallbacks can be chained and are tried in order.
+    /// retries, the request is sent to each fallback in order, with the
+    /// fallback's own default model. When all fail, the error lists every
+    /// provider's error.
     pub fn with_fallback(mut self, fallback: Client) -> Self {
         self.fallbacks.push(fallback);
         self
     }
 
     /// Set the default max output tokens.
+    ///
+    /// Sent as `max_completion_tokens` to OpenAI, `max_tokens` to
+    /// OpenAI-compatible APIs and Anthropic, and `maxOutputTokens` to Gemini.
+    /// When unset, OpenAI-family requests carry no limit, and Anthropic and
+    /// Gemini requests carry 16384.
     pub fn with_max_tokens(self, tokens: u32) -> Self {
         Self {
-            default_max_tokens: tokens,
+            default_max_tokens: Some(tokens),
             ..self
         }
     }
 
-    /// Use Anthropic's native structured outputs (`output_config.format`)
-    /// instead of the default forced `tool_use`.
+    /// Send the schema as Anthropic structured output
+    /// (`output_config.format`). This is the default for
+    /// [`Client::anthropic`]; use it on an
+    /// [`anthropic_compatible`](Self::anthropic_compatible) client whose
+    /// server supports it.
     ///
-    /// The schema then constrains the response text directly, with no tool
-    /// round-trip. This is opt-in because it is not accepted by every Claude
-    /// generation, nor by every Anthropic-compatible proxy — forced `tool_use`
-    /// remains the portable default.
-    ///
-    /// Has no effect on OpenAI or Gemini clients, which already use each
-    /// provider's own native structured output.
-    ///
-    /// ```rust,no_run
-    /// let client = instructors::Client::anthropic("sk-ant-...")
-    ///     .with_anthropic_structured_output();
-    /// ```
+    /// No effect on OpenAI or Gemini clients.
     pub fn with_anthropic_structured_output(mut self) -> Self {
         if let ProviderKind::Anthropic {
             structured_output, ..
@@ -270,10 +250,24 @@ impl Client {
         self
     }
 
-    /// Enable exponential backoff for retryable HTTP errors (429, 503).
+    /// Send the schema as a tool (`tools` + forced `tool_choice`) instead of
+    /// structured output, as 1.4 did by default. Models that reject forced
+    /// tool calls (Claude Opus 5.5, Sonnet 5.5, Fable 5.1 and later) need
+    /// structured output.
     ///
-    /// When configured, HTTP 429 (Too Many Requests) and 503 (Service Unavailable)
-    /// errors are retried with exponential backoff before being treated as failures.
+    /// No effect on OpenAI or Gemini clients.
+    pub fn with_anthropic_tool_use(mut self) -> Self {
+        if let ProviderKind::Anthropic {
+            structured_output, ..
+        } = &mut self.provider
+        {
+            *structured_output = false;
+        }
+        self
+    }
+
+    /// Enable exponential backoff for retryable HTTP errors (429, 500, 502,
+    /// 503, 504, 529).
     pub fn with_retry_backoff(self, config: BackoffConfig) -> Self {
         Self {
             default_backoff: Some(config),
@@ -293,8 +287,6 @@ impl Client {
     }
 
     /// Begin a batch extraction over multiple prompts with configurable concurrency.
-    ///
-    /// Returns a [`crate::BatchBuilder`] that processes prompts concurrently.
     ///
     /// ```rust,no_run
     /// # use serde::Deserialize;
@@ -325,7 +317,8 @@ impl Client {
 
     /// Extract a list of items from the prompt.
     ///
-    /// Internally wraps the target type in a `Vec<T>` for the LLM to populate.
+    /// The schema sent is an object `{"items": [T, ...]}`, because strict
+    /// structured output needs an object at the root; the result is the list.
     ///
     /// ```rust,no_run
     /// # use serde::Deserialize;
@@ -345,25 +338,7 @@ impl Client {
     where
         T: DeserializeOwned + JsonSchema,
     {
-        ExtractBuilder {
-            client: self,
-            prompt: prompt.into(),
-            model: self.default_model.clone(),
-            system: self.default_system.clone(),
-            temperature: self.default_temperature,
-            max_tokens: self.default_max_tokens,
-            max_retries: self.default_max_retries,
-            backoff: self.default_backoff.clone(),
-            timeout: self.default_timeout,
-            context: None,
-            images: Vec::new(),
-            history: None,
-            validator: None,
-            on_request: None,
-            on_response: None,
-            on_stream: None,
-            _phantom: PhantomData,
-        }
+        ExtractBuilder::new(self, prompt.into(), true)
     }
 
     /// Begin an extraction request. The return type `T` must implement
@@ -385,575 +360,7 @@ impl Client {
     where
         T: DeserializeOwned + JsonSchema,
     {
-        ExtractBuilder {
-            client: self,
-            prompt: prompt.into(),
-            model: self.default_model.clone(),
-            system: self.default_system.clone(),
-            temperature: self.default_temperature,
-            max_tokens: self.default_max_tokens,
-            max_retries: self.default_max_retries,
-            backoff: self.default_backoff.clone(),
-            timeout: self.default_timeout,
-            context: None,
-            images: Vec::new(),
-            history: None,
-            validator: None,
-            on_request: None,
-            on_response: None,
-            on_stream: None,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-type ValidatorFn<T> = Box<dyn Fn(&T) -> std::result::Result<(), ValidationError> + Send + Sync>;
-
-/// Builder for configuring an extraction request.
-///
-/// Created by [`Client::extract`]. Call `.await` to execute the request.
-pub struct ExtractBuilder<'a, T> {
-    client: &'a Client,
-    prompt: String,
-    model: Option<String>,
-    system: Option<String>,
-    temperature: Option<f64>,
-    max_tokens: u32,
-    max_retries: u32,
-    backoff: Option<BackoffConfig>,
-    timeout: Duration,
-    context: Option<String>,
-    images: Vec<ImageInput>,
-    history: Option<Vec<Message>>,
-    validator: Option<ValidatorFn<T>>,
-    on_request: Option<RequestHook>,
-    on_response: Option<ResponseHook>,
-    on_stream: Option<StreamHook>,
-    _phantom: PhantomData<T>,
-}
-
-type RequestHook = Box<dyn Fn(&str, &str) + Send + Sync>;
-type ResponseHook = Box<dyn Fn(&Usage) + Send + Sync>;
-type StreamHook = Box<dyn Fn(&str) + Send + Sync>;
-
-impl<T> ExtractBuilder<'_, T>
-where
-    T: DeserializeOwned + JsonSchema,
-{
-    /// Override the model for this request.
-    pub fn model(self, model: impl Into<String>) -> Self {
-        Self {
-            model: Some(model.into()),
-            ..self
-        }
-    }
-
-    /// Override the system prompt for this request.
-    pub fn system(self, system: impl Into<String>) -> Self {
-        Self {
-            system: Some(system.into()),
-            ..self
-        }
-    }
-
-    /// Set the temperature (0.0 = deterministic, 1.0 = creative).
-    ///
-    /// Not sent to Anthropic. The current Claude generations reject a
-    /// non-default `temperature` with a 400, so the Anthropic request never
-    /// carries it and this setting has no effect there. Sent to the OpenAI and
-    /// Gemini families as usual.
-    pub fn temperature(self, temp: f64) -> Self {
-        Self {
-            temperature: Some(temp),
-            ..self
-        }
-    }
-
-    /// Set the maximum output tokens.
-    pub fn max_tokens(self, tokens: u32) -> Self {
-        Self {
-            max_tokens: tokens,
-            ..self
-        }
-    }
-
-    /// Set the maximum retry attempts on parse/validation failure.
-    pub fn max_retries(self, retries: u32) -> Self {
-        Self {
-            max_retries: retries,
-            ..self
-        }
-    }
-
-    /// Enable exponential backoff for retryable HTTP errors (429, 503).
-    pub fn retry_backoff(self, config: BackoffConfig) -> Self {
-        Self {
-            backoff: Some(config),
-            ..self
-        }
-    }
-
-    /// Set the overall request timeout for this extraction.
-    ///
-    /// Covers the entire extraction including all retries, backoff, and fallback.
-    pub fn timeout(self, timeout: Duration) -> Self {
-        Self { timeout, ..self }
-    }
-
-    /// Add extra context to the prompt.
-    pub fn context(self, ctx: impl Into<String>) -> Self {
-        Self {
-            context: Some(ctx.into()),
-            ..self
-        }
-    }
-
-    /// Add an image to the extraction prompt (for vision-capable models).
-    ///
-    /// Can be called multiple times to add multiple images.
-    pub fn image(mut self, img: ImageInput) -> Self {
-        self.images.push(img);
-        self
-    }
-
-    /// Add multiple images to the extraction prompt.
-    pub fn images(mut self, imgs: Vec<ImageInput>) -> Self {
-        self.images.extend(imgs);
-        self
-    }
-
-    /// Set prior message history for multi-turn conversations.
-    ///
-    /// Messages are prepended before the extraction prompt.
-    ///
-    /// ```rust,no_run
-    /// # use serde::Deserialize;
-    /// # use schemars::JsonSchema;
-    /// use instructors::Message;
-    ///
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct Summary { text: String }
-    ///
-    /// # async fn run() -> instructors::Result<()> {
-    /// let client = instructors::Client::openai("sk-...");
-    /// let result = client.extract::<Summary>("summarize the above")
-    ///     .messages(vec![
-    ///         Message::user("Here is a long document..."),
-    ///         Message::assistant("I see the document."),
-    ///     ])
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn messages(self, msgs: Vec<Message>) -> Self {
-        Self {
-            history: Some(msgs),
-            ..self
-        }
-    }
-
-    /// Register a hook called before each API request.
-    ///
-    /// Receives `(model, prompt)`.
-    pub fn on_request<F>(self, f: F) -> Self
-    where
-        F: Fn(&str, &str) + Send + Sync + 'static,
-    {
-        Self {
-            on_request: Some(Box::new(f)),
-            ..self
-        }
-    }
-
-    /// Register a hook called after a successful extraction.
-    ///
-    /// Receives the final `Usage`.
-    pub fn on_response<F>(self, f: F) -> Self
-    where
-        F: Fn(&Usage) + Send + Sync + 'static,
-    {
-        Self {
-            on_response: Some(Box::new(f)),
-            ..self
-        }
-    }
-
-    /// Enable streaming with a callback that receives each content delta.
-    ///
-    /// When set, the underlying API request uses SSE streaming. The callback
-    /// fires for each content chunk as it arrives. The final result is still
-    /// a complete `ExtractResult<T>` parsed from the accumulated response.
-    pub fn on_stream<F>(self, f: F) -> Self
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        Self {
-            on_stream: Some(Box::new(f)),
-            ..self
-        }
-    }
-
-    /// Add a custom validation function. If validation fails, the error message
-    /// is fed back to the LLM and the request is retried.
-    ///
-    /// ```rust,no_run
-    /// # use serde::Deserialize;
-    /// # use schemars::JsonSchema;
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct User { name: String, age: u32 }
-    ///
-    /// # async fn run() -> instructors::Result<()> {
-    /// let client = instructors::Client::openai("sk-...");
-    /// let user: User = client.extract("...")
-    ///     .validate(|u: &User| {
-    ///         if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
-    ///     })
-    ///     .await?.value;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn validate<F>(self, f: F) -> Self
-    where
-        F: Fn(&T) -> std::result::Result<(), ValidationError> + Send + Sync + 'static,
-    {
-        Self {
-            validator: Some(Box::new(f)),
-            ..self
-        }
-    }
-
-    async fn execute(self) -> Result<ExtractResult<T>>
-    where
-        T: 'static,
-    {
-        let timeout = self.timeout;
-        #[cfg(feature = "tracing")]
-        {
-            let model = self
-                .model
-                .as_deref()
-                .unwrap_or(self.client.provider.default_model())
-                .to_string();
-            let span = tracing::info_span!(
-                "instructors.extract",
-                provider = self.client.provider.kind_name(),
-                model = model.as_str(),
-                max_retries = self.max_retries,
-            );
-            use tracing::Instrument;
-            tokio::time::timeout(timeout, self.execute_inner().instrument(span))
-                .await
-                .map_err(|_| Error::Timeout(timeout))?
-        }
-        #[cfg(not(feature = "tracing"))]
-        {
-            tokio::time::timeout(timeout, self.execute_inner())
-                .await
-                .map_err(|_| Error::Timeout(timeout))?
-        }
-    }
-
-    async fn execute_inner(self) -> Result<ExtractResult<T>>
-    where
-        T: 'static,
-    {
-        // try primary provider
-        let result = self.try_provider(self.client).await;
-
-        // on failure, try fallbacks in order
-        match result {
-            Ok(ok) => Ok(ok),
-            Err(primary_err) => {
-                #[cfg(feature = "tracing")]
-                if !self.client.fallbacks.is_empty() {
-                    tracing::info!(
-                        from_provider = self.client.provider.kind_name(),
-                        error = %primary_err,
-                        "primary provider failed, trying fallbacks"
-                    );
-                }
-
-                for fallback in &self.client.fallbacks {
-                    if let Ok(ok) = self.try_provider(fallback).await {
-                        return Ok(ok);
-                    }
-                }
-                Err(primary_err)
-            }
-        }
-    }
-
-    /// Send an HTTP request with optional exponential backoff on 429/503.
-    async fn http_send_with_retry(
-        &self,
-        client: &Client,
-        model: &str,
-        system: Option<&str>,
-        messages: &[Message],
-        root_schema_ref: &schemars::Schema,
-        schema_name: &str,
-    ) -> Result<RawResponse> {
-        let max_http_retries = self
-            .backoff
-            .as_ref()
-            .map(|b| b.max_http_retries)
-            .unwrap_or(0);
-
-        for http_attempt in 0..=max_http_retries {
-            let result = client
-                .provider
-                .send(
-                    &client.http,
-                    model,
-                    system,
-                    messages,
-                    root_schema_ref,
-                    schema_name,
-                    self.temperature,
-                    self.max_tokens,
-                    self.on_stream.as_deref(),
-                )
-                .await;
-
-            match result {
-                Ok(raw) => return Ok(raw),
-                Err(Error::Api { status, .. })
-                    if (status == 429 || status == 503) && http_attempt < max_http_retries =>
-                {
-                    if let Some(ref backoff) = self.backoff {
-                        let delay = backoff.delay_for(http_attempt);
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(
-                            status,
-                            attempt = http_attempt,
-                            delay_ms = delay.as_millis() as u64,
-                            "retryable HTTP error, backing off"
-                        );
-                        tokio::time::sleep(delay).await;
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        unreachable!()
-    }
-
-    async fn try_provider(&self, client: &Client) -> Result<ExtractResult<T>>
-    where
-        T: 'static,
-    {
-        let (root_schema, schema_name) = crate::schema::cached_schema_for::<T>();
-        let root_schema_ref: &schemars::Schema = &root_schema;
-
-        let mut user_content = self.prompt.clone();
-        if let Some(ctx) = &self.context {
-            user_content = format!("{user_content}\n\nAdditional context:\n{ctx}");
-        }
-
-        let model = self
-            .model
-            .as_deref()
-            .unwrap_or(client.provider.default_model());
-        let system = self.system.as_deref();
-
-        let mut usage = Usage::default();
-        let mut last_error = String::new();
-
-        // pre-clone history and images once outside the retry loop
-        let history: Vec<Message> = self
-            .history
-            .as_ref()
-            .map(|h| h.to_vec())
-            .unwrap_or_default();
-        let images = &self.images;
-
-        for attempt in 0..=self.max_retries {
-            let prompt_with_retry = if attempt == 0 {
-                user_content.clone()
-            } else {
-                format!(
-                    "{user_content}\n\n\
-                     IMPORTANT: A previous extraction attempt produced invalid output.\n\
-                     Error: {last_error}\n\
-                     Please ensure your response is valid JSON matching the schema exactly."
-                )
-            };
-
-            let mut messages = Vec::with_capacity(history.len() + 1);
-            messages.extend(history.iter().cloned());
-            messages.push(Message {
-                role: "user".into(),
-                content: prompt_with_retry.clone(),
-                images: images.clone(),
-            });
-
-            if let Some(ref hook) = self.on_request {
-                hook(model, &prompt_with_retry);
-            }
-
-            let raw = self
-                .http_send_with_retry(
-                    client,
-                    model,
-                    system,
-                    &messages,
-                    root_schema_ref,
-                    &schema_name,
-                )
-                .await?;
-
-            usage.accumulate(raw.input_tokens, raw.output_tokens);
-
-            // parse JSON — try direct parse first, then repair if malformed
-            let value: T = match serde_json::from_str(&raw.content) {
-                Ok(v) => v,
-                Err(direct_err) => {
-                    // attempt to repair malformed JSON before retrying
-                    match jsonrepair::repair_json(&raw.content, &jsonrepair::Options::default()) {
-                        Ok(repaired) if repaired != raw.content => {
-                            match serde_json::from_str(&repaired) {
-                                Ok(v) => {
-                                    #[cfg(feature = "tracing")]
-                                    tracing::info!(attempt, "json repaired successfully");
-                                    v
-                                }
-                                Err(repair_err) => {
-                                    last_error = format!(
-                                        "{repair_err} (repaired: {})",
-                                        truncate(&repaired, 200)
-                                    );
-                                    #[cfg(feature = "tracing")]
-                                    tracing::info!(attempt, error = %last_error, "repair parse failed, retrying");
-                                    if attempt < self.max_retries {
-                                        usage.retries += 1;
-                                    }
-                                    continue;
-                                }
-                            }
-                        }
-                        _ => {
-                            last_error =
-                                format!("{direct_err} (raw: {})", truncate(&raw.content, 200));
-                            #[cfg(feature = "tracing")]
-                            tracing::info!(attempt, error = %last_error, "parse failed, retrying");
-                            if attempt < self.max_retries {
-                                usage.retries += 1;
-                            }
-                            continue;
-                        }
-                    }
-                }
-            };
-
-            // run validator if present
-            if let Some(ref validator) = self.validator
-                && let Err(e) = validator(&value)
-            {
-                last_error = format!("validation: {}", e.message);
-                #[cfg(feature = "tracing")]
-                tracing::info!(attempt, error = %last_error, "validation failed, retrying");
-                if attempt < self.max_retries {
-                    usage.retries += 1;
-                }
-                continue;
-            }
-
-            // success
-            #[cfg(feature = "cost-tracking")]
-            {
-                usage.cost = tiktoken::pricing::estimate_cost(
-                    model,
-                    usage.input_tokens as u64,
-                    usage.output_tokens as u64,
-                );
-            }
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                input_tokens = usage.input_tokens,
-                output_tokens = usage.output_tokens,
-                retries = usage.retries,
-                "extraction succeeded"
-            );
-            if let Some(ref hook) = self.on_response {
-                hook(&usage);
-            }
-            return Ok(ExtractResult { value, usage });
-        }
-
-        // determine error type
-        #[cfg(feature = "tracing")]
-        tracing::error!(retries = self.max_retries, error = %last_error, "extraction failed");
-
-        let err = if last_error.starts_with("validation:") {
-            Error::ValidationFailed {
-                retries: self.max_retries,
-                message: last_error,
-            }
-        } else {
-            Error::ExtractionFailed {
-                retries: self.max_retries,
-                message: last_error,
-            }
-        };
-        Err(err)
-    }
-}
-
-impl<T> ExtractBuilder<'_, T>
-where
-    T: DeserializeOwned + JsonSchema + Validate,
-{
-    /// Enable trait-based validation. Calls `T::validate()` after deserialization.
-    /// If validation fails, the error is fed back to the LLM for retry.
-    ///
-    /// Requires `T: Validate`.
-    ///
-    /// ```rust,no_run
-    /// # use serde::Deserialize;
-    /// # use schemars::JsonSchema;
-    /// # use instructors::{Validate, ValidationError};
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct Email { address: String }
-    ///
-    /// impl Validate for Email {
-    ///     fn validate(&self) -> Result<(), ValidationError> {
-    ///         if self.address.contains('@') { Ok(()) }
-    ///         else { Err("invalid email".into()) }
-    ///     }
-    /// }
-    ///
-    /// # async fn run() -> instructors::Result<()> {
-    /// let client = instructors::Client::openai("sk-...");
-    /// let email: Email = client.extract("...").validated().await?.value;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn validated(self) -> Self {
-        Self {
-            validator: Some(Box::new(|v: &T| v.validate())),
-            ..self
-        }
-    }
-}
-
-impl<'a, T> IntoFuture for ExtractBuilder<'a, T>
-where
-    T: DeserializeOwned + JsonSchema + Send + Sync + 'static,
-{
-    type Output = Result<ExtractResult<T>>;
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.execute())
-    }
-}
-
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..s.floor_char_boundary(max)]
+        ExtractBuilder::new(self, prompt.into(), false)
     }
 }
 
@@ -962,379 +369,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncate_short() {
-        assert_eq!(truncate("hello", 10), "hello");
+    fn constructors_pick_provider_and_defaults() {
+        let c = Client::openai("k");
+        assert_eq!(c.default_temperature, Some(0.0));
+        assert_eq!(c.default_max_tokens, None);
+        assert!(matches!(
+            c.provider,
+            ProviderKind::OpenAi { ref base_url, dialect: OaiDialect::OpenAi, .. }
+                if base_url == "https://api.openai.com/v1"
+        ));
+
+        let c = Client::openai_compatible("k", "https://api.deepseek.com/v1");
+        assert!(matches!(
+            c.provider,
+            ProviderKind::OpenAi {
+                dialect: OaiDialect::DeepSeek,
+                ..
+            }
+        ));
+
+        let c = Client::anthropic("k");
+        assert_eq!(c.default_temperature, None);
+        assert!(matches!(
+            c.provider,
+            ProviderKind::Anthropic {
+                structured_output: true,
+                ..
+            }
+        ));
+        let c = c.with_anthropic_tool_use();
+        assert!(matches!(
+            c.provider,
+            ProviderKind::Anthropic {
+                structured_output: false,
+                ..
+            }
+        ));
+
+        let c = Client::anthropic_compatible("k", "https://proxy.example.com/v1");
+        assert!(matches!(
+            c.provider,
+            ProviderKind::Anthropic {
+                structured_output: false,
+                ..
+            }
+        ));
+
+        let c = Client::gemini("k");
+        assert!(matches!(
+            c.provider,
+            ProviderKind::Gemini { ref base_url, .. }
+                if base_url == "https://generativelanguage.googleapis.com/v1beta"
+        ));
+        assert_eq!(c.default_timeout, Duration::from_secs(60));
     }
 
     #[test]
-    fn truncate_exact() {
-        assert_eq!(truncate("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_long() {
-        let s = "a".repeat(300);
-        assert_eq!(truncate(&s, 200).len(), 200);
-    }
-
-    #[test]
-    fn truncate_unicode() {
-        let s = "你好世界你好世界你好世界";
-        let t = truncate(s, 6);
-        assert!(t.len() <= 6);
-        assert!(t.is_char_boundary(t.len()));
-    }
-
-    #[test]
-    fn truncate_empty() {
-        assert_eq!(truncate("", 10), "");
-    }
-
-    #[test]
-    fn truncate_zero() {
-        assert_eq!(truncate("hello", 0), "");
-    }
-
-    #[test]
-    fn client_builder_openai() {
-        let client = Client::openai("test-key")
+    fn setters() {
+        let c = Client::openai("k")
             .with_model("gpt-5.6-luna")
             .with_max_retries(5)
             .with_temperature(0.5)
             .with_max_tokens(2048)
-            .with_system("custom system");
-
-        assert_eq!(client.default_model.as_deref(), Some("gpt-5.6-luna"));
-        assert_eq!(client.default_max_retries, 5);
-        assert_eq!(client.default_temperature, Some(0.5));
-        assert_eq!(client.default_max_tokens, 2048);
-        assert_eq!(client.default_system.as_deref(), Some("custom system"));
-    }
-
-    #[test]
-    fn client_builder_anthropic() {
-        let client = Client::anthropic("test-key");
-        assert_eq!(client.default_temperature, None);
-        assert_eq!(client.default_max_retries, 2);
-        assert_eq!(client.default_max_tokens, 16384);
-        match &client.provider {
-            ProviderKind::Anthropic { base_url, .. } => {
-                assert_eq!(base_url, "https://api.anthropic.com/v1");
-            }
-            _ => panic!("expected Anthropic provider"),
-        }
-    }
-
-    #[test]
-    fn client_openai_compatible() {
-        let client = Client::openai_compatible("key", "https://api.deepseek.com/v1");
-        match &client.provider {
-            ProviderKind::OpenAi { base_url, .. } => {
-                assert_eq!(base_url, "https://api.deepseek.com/v1");
-            }
-            _ => panic!("expected OpenAi provider"),
-        }
-    }
-
-    #[test]
-    fn client_default_models() {
-        let openai = Client::openai("key");
-        match &openai.provider {
-            ProviderKind::OpenAi { .. } => {}
-            _ => panic!("wrong provider"),
-        }
-
-        let anthropic = Client::anthropic("key");
-        match &anthropic.provider {
-            ProviderKind::Anthropic { .. } => {}
-            _ => panic!("wrong provider"),
-        }
-    }
-
-    #[test]
-    fn openai_defaults() {
-        let client = Client::openai("key");
-        assert_eq!(client.default_temperature, Some(0.0));
-        assert_eq!(client.default_max_retries, 2);
-        match &client.provider {
-            ProviderKind::OpenAi { base_url, .. } => {
-                assert_eq!(base_url, "https://api.openai.com/v1");
-            }
-            _ => panic!("expected OpenAi"),
-        }
-    }
-
-    #[test]
-    fn extract_builder_defaults() {
-        let client = Client::openai("key").with_model("gpt-5.6-luna");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client.extract::<Dummy>("test prompt");
-        assert_eq!(builder.prompt, "test prompt");
-        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
-        assert_eq!(builder.max_retries, 2);
-        assert_eq!(builder.temperature, Some(0.0));
-        assert_eq!(builder.max_tokens, 16384);
-        assert!(builder.context.is_none());
-        assert!(builder.validator.is_none());
-    }
-
-    #[test]
-    fn extract_builder_overrides() {
-        let client = Client::openai("key");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client
-            .extract::<Dummy>("prompt")
-            .model("gpt-5.6-terra")
-            .system("be precise")
-            .temperature(0.7)
-            .max_tokens(1024)
-            .max_retries(5)
-            .context("extra info");
-
-        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-terra"));
-        assert_eq!(builder.system.as_deref(), Some("be precise"));
-        assert_eq!(builder.temperature, Some(0.7));
-        assert_eq!(builder.max_tokens, 1024);
-        assert_eq!(builder.max_retries, 5);
-        assert_eq!(builder.context.as_deref(), Some("extra info"));
-    }
-
-    #[test]
-    fn client_anthropic_compatible() {
-        let client = Client::anthropic_compatible("key", "https://proxy.example.com/v1");
-        match &client.provider {
-            ProviderKind::Anthropic { base_url, .. } => {
-                assert_eq!(base_url, "https://proxy.example.com/v1");
-            }
-            _ => panic!("expected Anthropic provider"),
-        }
-    }
-
-    #[test]
-    fn extract_many_inherits_defaults() {
-        let client = Client::openai("key")
-            .with_model("gpt-5.6-luna")
-            .with_system("custom")
-            .with_temperature(0.7);
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Item {
-            x: i32,
-        }
-
-        let builder = client.extract_many::<Item>("test");
-        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
-        assert_eq!(builder.system.as_deref(), Some("custom"));
-        assert_eq!(builder.temperature, Some(0.7));
-    }
-
-    #[test]
-    fn extract_builder_messages() {
-        let client = Client::openai("key");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client
-            .extract::<Dummy>("test")
-            .messages(vec![Message::user("hello"), Message::assistant("hi")]);
-        assert!(builder.history.is_some());
-        assert_eq!(builder.history.as_ref().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn extract_builder_hooks() {
-        let client = Client::openai("key");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client
-            .extract::<Dummy>("test")
-            .on_request(|_, _| {})
-            .on_response(|_| {});
-        assert!(builder.on_request.is_some());
-        assert!(builder.on_response.is_some());
-    }
-
-    #[test]
-    fn extract_builder_image() {
-        let client = Client::openai("key");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client
-            .extract::<Dummy>("describe")
-            .image(ImageInput::Url("https://example.com/img.png".into()))
-            .image(ImageInput::Base64 {
-                media_type: "image/jpeg".into(),
-                data: "abc".into(),
-            });
-        assert_eq!(builder.images.len(), 2);
-    }
-
-    #[test]
-    fn extract_builder_images_batch() {
-        let client = Client::openai("key");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client.extract::<Dummy>("describe").images(vec![
-            ImageInput::Url("https://a.com/1.png".into()),
-            ImageInput::Url("https://a.com/2.png".into()),
-        ]);
-        assert_eq!(builder.images.len(), 2);
-    }
-
-    #[test]
-    fn client_with_fallback() {
-        let client = Client::openai("key")
-            .with_fallback(Client::anthropic("ant-key"))
-            .with_fallback(Client::openai_compatible(
-                "key2",
-                "https://backup.example.com",
-            ));
-        assert_eq!(client.fallbacks.len(), 2);
-    }
-
-    #[test]
-    fn extract_builder_with_validator() {
-        let client = Client::openai("key");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client.extract::<Dummy>("prompt").validate(|d| {
-            if d.x > 0 {
-                Ok(())
-            } else {
-                Err("x must be positive".into())
-            }
-        });
-
-        assert!(builder.validator.is_some());
-        // test the validator function directly
-        let validator = builder.validator.as_ref().unwrap();
-        let good = Dummy { x: 1 };
-        assert!(validator(&good).is_ok());
-        let bad = Dummy { x: -1 };
-        let err = validator(&bad).unwrap_err();
-        assert_eq!(err.message, "x must be positive");
-    }
-
-    #[test]
-    fn extract_builder_validated_trait() {
-        let client = Client::openai("key");
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Strict {
-            value: i32,
-        }
-
-        impl Validate for Strict {
-            fn validate(&self) -> std::result::Result<(), ValidationError> {
-                if self.value >= 0 {
-                    Ok(())
-                } else {
-                    Err("must be non-negative".into())
-                }
-            }
-        }
-
-        let builder = client.extract::<Strict>("prompt").validated();
-        assert!(builder.validator.is_some());
-        let validator = builder.validator.as_ref().unwrap();
-        assert!(validator(&Strict { value: 5 }).is_ok());
-        assert!(validator(&Strict { value: -1 }).is_err());
-    }
-
-    #[test]
-    fn client_builder_gemini() {
-        let client = Client::gemini("test-key");
-        assert_eq!(client.default_temperature, None);
-        assert_eq!(client.default_max_tokens, 16384);
-        match &client.provider {
-            ProviderKind::Gemini { base_url, .. } => {
-                assert_eq!(base_url, "https://generativelanguage.googleapis.com/v1beta");
-            }
-            _ => panic!("expected Gemini provider"),
-        }
-    }
-
-    #[test]
-    fn client_gemini_compatible() {
-        let client = Client::gemini_compatible("key", "https://proxy.example.com/v1beta");
-        match &client.provider {
-            ProviderKind::Gemini { base_url, .. } => {
-                assert_eq!(base_url, "https://proxy.example.com/v1beta");
-            }
-            _ => panic!("expected Gemini provider"),
-        }
-    }
-
-    #[test]
-    fn default_timeout_60s() {
-        let client = Client::openai("key");
-        assert_eq!(client.default_timeout, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn custom_timeout() {
-        let client = Client::openai("key").with_timeout(Duration::from_secs(120));
-        assert_eq!(client.default_timeout, Duration::from_secs(120));
-    }
-
-    #[test]
-    fn client_with_retry_backoff() {
-        let client = Client::openai("key").with_retry_backoff(BackoffConfig::default());
-        assert!(client.default_backoff.is_some());
-    }
-
-    #[test]
-    fn extract_builder_backoff_and_timeout() {
-        let client = Client::openai("key")
+            .with_system("s")
+            .with_reasoning(Reasoning::Off)
+            .with_timeout(Duration::from_secs(5))
             .with_retry_backoff(BackoffConfig::default())
-            .with_timeout(Duration::from_secs(30));
-
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct Dummy {
-            x: i32,
-        }
-
-        let builder = client.extract::<Dummy>("test");
-        assert!(builder.backoff.is_some());
-        assert_eq!(builder.timeout, Duration::from_secs(30));
-
-        // per-request override
-        let builder = builder
-            .retry_backoff(BackoffConfig {
-                max_http_retries: 5,
-                ..Default::default()
-            })
-            .timeout(Duration::from_secs(90));
-        assert_eq!(builder.backoff.as_ref().unwrap().max_http_retries, 5);
-        assert_eq!(builder.timeout, Duration::from_secs(90));
+            .with_fallback(Client::anthropic("a"));
+        assert_eq!(c.default_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(c.default_max_retries, 5);
+        assert_eq!(c.default_temperature, Some(0.5));
+        assert_eq!(c.default_max_tokens, Some(2048));
+        assert_eq!(c.default_system.as_deref(), Some("s"));
+        assert_eq!(c.default_reasoning, Some(Reasoning::Off));
+        assert_eq!(c.default_timeout, Duration::from_secs(5));
+        assert!(c.default_backoff.is_some());
+        assert_eq!(c.fallbacks.len(), 1);
     }
 }

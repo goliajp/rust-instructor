@@ -79,16 +79,24 @@ mod backoff;
 mod batch;
 mod client;
 mod error;
+mod extract;
+pub mod partial;
 mod provider;
+mod reasoning;
+mod run;
 mod schema;
+mod sse;
 mod usage;
 mod validate;
 
 pub use backoff::BackoffConfig;
 pub use batch::BatchBuilder;
-pub use client::{Client, ExtractBuilder, ExtractResult};
+pub use client::{Client, ExtractResult};
 pub use error::{Error, Result};
+pub use extract::ExtractBuilder;
+pub use partial::PartialValue;
 pub use provider::{ImageInput, Message};
+pub use reasoning::{Effort, Reasoning};
 pub use usage::Usage;
 pub use validate::{Validate, ValidationError};
 
@@ -103,8 +111,8 @@ pub use serde;
 /// ```
 pub mod prelude {
     pub use crate::{
-        BackoffConfig, BatchBuilder, Client, ExtractResult, ImageInput, Message, Usage, Validate,
-        ValidationError,
+        BackoffConfig, BatchBuilder, Client, Effort, ExtractResult, ImageInput, Message,
+        PartialValue, Reasoning, Usage, Validate, ValidationError,
     };
     pub use schemars::JsonSchema;
     pub use serde::Deserialize;
@@ -122,6 +130,7 @@ mod tests {
         age: u32,
     }
 
+    #[allow(dead_code)]
     #[derive(Debug, Deserialize, JsonSchema)]
     struct WithOptional {
         title: String,

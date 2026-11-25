@@ -1,362 +1,407 @@
-use std::any::TypeId;
-use std::collections::HashMap;
-use std::sync::Arc;
+//! Provider-ready JSON schemas, built once per type and cached as bytes.
+//!
+//! This module depends only on `schemars`, `serde_json` and `std`.
 
-use schemars::{JsonSchema, Schema};
+use std::any::TypeId;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, OnceLock};
+
+use schemars::JsonSchema;
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
-/// Cached schema generation. Uses thread_local to avoid lock contention
-/// in concurrent batch scenarios. Returns `Arc<Schema>` to eliminate
-/// full schema cloning on every extraction request.
-pub(crate) fn cached_schema_for<T: JsonSchema + 'static>() -> (Arc<Schema>, String) {
+/// The schema shape each wire format expects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    /// OpenAI `response_format` object (`json_schema`, strict).
+    OpenAi,
+    /// Anthropic `output_config.format.schema`.
+    AnthropicOutput,
+    /// Anthropic tool `input_schema`.
+    AnthropicTool,
+    /// Gemini `responseSchema` (OpenAPI subset, no `$ref`).
+    Gemini,
+    /// Gemini `responseJsonSchema` (JSON Schema, `$ref` allowed).
+    GeminiJson,
+}
+
+const DIALECTS: usize = 5;
+
+impl Dialect {
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// One type's schema, normalized once, with each dialect's bytes built on
+/// first use.
+pub(crate) struct SchemaEntry {
+    name: String,
+    recursive: bool,
+    base: Value,
+    built: [OnceLock<Box<RawValue>>; DIALECTS],
+}
+
+impl SchemaEntry {
+    pub(crate) fn new(root: Value, name: &str, list: bool) -> Self {
+        let (base, recursive) = normalize(root, list);
+        Self {
+            name: sanitize_name(name),
+            recursive,
+            base,
+            built: Default::default(),
+        }
+    }
+
+    /// True when the schema refers to itself, which some dialects cannot
+    /// express.
+    pub(crate) fn recursive(&self) -> bool {
+        self.recursive
+    }
+
+    /// Serialized schema for `dialect`, built on first call.
+    pub(crate) fn get(&self, dialect: Dialect) -> &RawValue {
+        self.built[dialect.index()].get_or_init(|| {
+            let v = build(&self.base, &self.name, dialect);
+            RawValue::from_string(v.to_string()).expect("serde_json output is valid json")
+        })
+    }
+}
+
+/// Cached schema entry for `T`. `list` wraps the schema as `{"items": T}`.
+pub(crate) fn entry_for<T: JsonSchema + 'static>(list: bool) -> Arc<SchemaEntry> {
     thread_local! {
-        static CACHE: std::cell::RefCell<HashMap<TypeId, (Arc<Schema>, String)>> =
-            std::cell::RefCell::new(HashMap::new());
+        static CACHE: RefCell<HashMap<(TypeId, bool), Arc<SchemaEntry>>> =
+            RefCell::new(HashMap::new());
     }
     CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let entry = cache.entry(TypeId::of::<T>()).or_insert_with(|| {
-            let schema = schemars::schema_for!(T);
-            let name = T::schema_name().to_string();
-            (Arc::new(schema), name)
-        });
-        (Arc::clone(&entry.0), entry.1.clone())
+        cache
+            .borrow_mut()
+            .entry((TypeId::of::<T>(), list))
+            .or_insert_with(|| {
+                let root = schemars::schema_for!(T).to_value();
+                Arc::new(SchemaEntry::new(root, &T::schema_name(), list))
+            })
+            .clone()
     })
 }
 
-/// Convert a schemars Schema to a clean JSON Value with inlined refs.
-pub(crate) fn from_schema(schema: &Schema) -> Value {
-    let mut value = serde_json::to_value(schema).unwrap_or(Value::Null);
-
-    if let Some(obj) = value.as_object_mut() {
-        obj.remove("$schema");
-    }
-
-    let definitions = extract_definitions(&value);
-    inline_refs(&mut value, &definitions);
-
-    if let Some(obj) = value.as_object_mut() {
-        obj.remove("$defs");
-    }
-
-    value
-}
-
-/// Prepare the `response_format` payload for OpenAI structured output (strict mode).
-pub(crate) fn wrap_for_openai(schema: &Schema, name: &str) -> Value {
-    let mut schema_value = from_schema(schema);
-    remove_key_recursive(&mut schema_value, "title");
-    remove_key_recursive(&mut schema_value, "format");
-    add_additional_properties_false(&mut schema_value);
-    make_all_properties_required(&mut schema_value);
-
-    serde_json::json!({
-        "type": "json_schema",
-        "json_schema": {
-            "name": name,
-            "strict": true,
-            "schema": schema_value
-        }
-    })
-}
-
-/// Clean up the schema for use as Anthropic tool `input_schema`.
-pub(crate) fn clean_for_anthropic(schema: &Schema) -> Value {
-    let mut schema_value = from_schema(schema);
-    remove_key_recursive(&mut schema_value, "title");
-    schema_value
-}
-
-/// Prepare the schema for Anthropic native structured outputs
-/// (`output_config.format`), which requires `additionalProperties: false` on
-/// every object and every property listed in `required`.
-pub(crate) fn clean_for_anthropic_structured(schema: &Schema) -> Value {
-    let mut schema_value = from_schema(schema);
-    remove_key_recursive(&mut schema_value, "title");
-    add_additional_properties_false(&mut schema_value);
-    make_all_properties_required(&mut schema_value);
-    schema_value
-}
-
-/// Clean up the schema for Gemini `response_schema`.
-///
-/// Removes `title`, `format`, and `additionalProperties`, and converts
-/// `anyOf: [{type: T}, {type: "null"}]` into `{type: T, nullable: true}`.
-pub(crate) fn clean_for_gemini(schema: &Schema) -> Value {
-    let mut schema_value = from_schema(schema);
-    remove_key_recursive(&mut schema_value, "title");
-    remove_key_recursive(&mut schema_value, "format");
-    remove_key_recursive(&mut schema_value, "additionalProperties");
-    convert_nullable_for_gemini(&mut schema_value);
-    schema_value
-}
-
-/// Convert nullable types for Gemini compatibility.
-///
-/// Handles two patterns:
-/// 1. schemars v1: `"type": ["string", "null"]` → `"type": "string", "nullable": true`
-/// 2. anyOf pattern: `anyOf: [{type: T}, {type: "null"}]` → `{type: T, nullable: true}`
-fn convert_nullable_for_gemini(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            // handle schemars v1 type-array pattern: "type": ["string", "null"]
-            if let Some(type_val) = map.get("type")
-                && let Some(type_arr) = type_val.as_array()
-                && type_arr.len() == 2
-            {
-                let null_idx = type_arr.iter().position(|v| v.as_str() == Some("null"));
-                if let Some(idx) = null_idx {
-                    let non_null_idx = 1 - idx;
-                    let real_type = type_arr[non_null_idx].clone();
-                    map.insert("type".into(), real_type);
-                    map.insert("nullable".into(), Value::Bool(true));
-                }
+fn sanitize_name(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
             }
+        })
+        .collect();
+    out.truncate(64);
+    if out.is_empty() {
+        out.push_str("output");
+    }
+    out
+}
 
-            // handle anyOf pattern: anyOf: [{type: T}, {type: "null"}]
-            if let Some(any_of) = map.remove("anyOf")
-                && let Some(variants) = any_of.as_array()
-                && variants.len() == 2
-            {
-                let null_idx = variants
-                    .iter()
-                    .position(|v| v.get("type").and_then(|t| t.as_str()) == Some("null"));
-                if let Some(idx) = null_idx {
-                    let non_null_idx = 1 - idx;
-                    let mut non_null = variants[non_null_idx].clone();
-                    if let Some(obj) = non_null.as_object_mut() {
-                        obj.insert("nullable".into(), Value::Bool(true));
-                    }
-                    convert_nullable_for_gemini(&mut non_null);
-                    if let Some(inner) = non_null.as_object() {
-                        for (k, v) in inner {
-                            map.insert(k.clone(), v.clone());
-                        }
-                    }
-                } else {
-                    // not a nullable pattern, restore anyOf
-                    map.insert("anyOf".into(), any_of);
-                }
-            }
-
-            for v in map.values_mut() {
-                convert_nullable_for_gemini(v);
+/// Strip `$schema`, inline every non-recursive `$ref`, keep `$defs` only for
+/// types that refer to themselves, and wrap list schemas in an object root.
+fn normalize(mut root: Value, list: bool) -> (Value, bool) {
+    let defs = match root.as_object_mut() {
+        Some(obj) => {
+            obj.remove("$schema");
+            match obj.remove("$defs") {
+                Some(Value::Object(d)) => d,
+                _ => Map::new(),
             }
         }
-        Value::Array(arr) => {
-            for v in arr {
-                convert_nullable_for_gemini(v);
-            }
+        None => Map::new(),
+    };
+
+    let mut ctx = Inline {
+        defs: &defs,
+        stack: Vec::new(),
+        kept: BTreeMap::new(),
+        root_ref: false,
+    };
+    ctx.schema(&mut root);
+
+    // kept definitions are themselves inlined, which may keep more
+    let mut out_defs = Map::new();
+    loop {
+        let pending: Vec<String> = ctx
+            .kept
+            .iter()
+            .filter(|(_, done)| !**done)
+            .map(|(name, _)| name.clone())
+            .collect();
+        if pending.is_empty() {
+            break;
         }
-        _ => {}
+        for name in pending {
+            ctx.kept.insert(name.clone(), true);
+            let mut def = defs.get(&name).cloned().unwrap_or(Value::Bool(true));
+            ctx.stack.push(name.clone());
+            ctx.schema(&mut def);
+            ctx.stack.pop();
+            out_defs.insert(name, def);
+        }
     }
+
+    let recursive = ctx.root_ref || !out_defs.is_empty();
+
+    let mut root = if list {
+        let mut wrapper = Map::new();
+        wrapper.insert("type".into(), "object".into());
+        let mut props = Map::new();
+        props.insert("items".into(), root);
+        wrapper.insert("properties".into(), Value::Object(props));
+        wrapper.insert("required".into(), Value::Array(vec!["items".into()]));
+        Value::Object(wrapper)
+    } else {
+        root
+    };
+    if !out_defs.is_empty()
+        && let Some(obj) = root.as_object_mut()
+    {
+        obj.insert("$defs".into(), Value::Object(out_defs));
+    }
+    (root, recursive)
 }
 
-fn extract_definitions(value: &Value) -> Map<String, Value> {
-    value
-        .get("$defs")
-        .and_then(|d| d.as_object())
-        .cloned()
-        .unwrap_or_default()
+struct Inline<'a> {
+    defs: &'a Map<String, Value>,
+    stack: Vec<String>,
+    // name -> already emitted
+    kept: BTreeMap<String, bool>,
+    root_ref: bool,
 }
 
-fn inline_refs(value: &mut Value, definitions: &Map<String, Value>) {
-    match value {
-        Value::Object(map) => {
-            if let Some(ref_str) = map.get("$ref").and_then(|r| r.as_str()).map(String::from)
-                && let Some(name) = ref_str.strip_prefix("#/$defs/")
-                && let Some(def) = definitions.get(name)
-            {
-                let mut resolved = def.clone();
-                inline_refs(&mut resolved, definitions);
-                *value = resolved;
+impl Inline<'_> {
+    fn schema(&mut self, v: &mut Value) {
+        let Some(map) = v.as_object_mut() else {
+            return;
+        };
+        if let Some(r) = map.get("$ref").and_then(Value::as_str) {
+            if r == "#" {
+                self.root_ref = true;
                 return;
             }
-            for v in map.values_mut() {
-                inline_refs(v, definitions);
+            if let Some(name) = r.strip_prefix("#/$defs/") {
+                let name = name.to_string();
+                if self.stack.contains(&name) {
+                    self.kept.entry(name).or_insert(false);
+                    return;
+                }
+                if let Some(def) = self.defs.get(&name) {
+                    let mut resolved = def.clone();
+                    if let Some(obj) = resolved.as_object_mut() {
+                        for (k, val) in map.iter() {
+                            if k != "$ref" {
+                                obj.insert(k.clone(), val.clone());
+                            }
+                        }
+                    }
+                    *v = resolved;
+                    self.stack.push(name);
+                    self.schema(v);
+                    self.stack.pop();
+                    return;
+                }
             }
+            return;
         }
-        Value::Array(arr) => {
-            for v in arr {
-                inline_refs(v, definitions);
-            }
-        }
-        _ => {}
+        for_each_subschema(map, |s| self.schema(s));
     }
 }
 
-fn remove_key_recursive(value: &mut Value, key: &str) {
-    match value {
-        Value::Object(map) => {
-            map.remove(key);
-            for v in map.values_mut() {
-                remove_key_recursive(v, key);
+/// Visit every subschema position of one schema object (not property maps
+/// themselves, so a field named `title` or `format` is never mistaken for a
+/// keyword).
+fn for_each_subschema(map: &mut Map<String, Value>, mut f: impl FnMut(&mut Value)) {
+    for (key, val) in map.iter_mut() {
+        match key.as_str() {
+            "properties" | "patternProperties" | "$defs" | "definitions" => {
+                if let Some(m) = val.as_object_mut() {
+                    m.values_mut().for_each(&mut f);
+                }
             }
-        }
-        Value::Array(arr) => {
-            for v in arr {
-                remove_key_recursive(v, key);
+            "anyOf" | "oneOf" | "allOf" | "prefixItems" => {
+                if let Some(a) = val.as_array_mut() {
+                    a.iter_mut().for_each(&mut f);
+                }
             }
+            "items" => match val {
+                Value::Array(a) => a.iter_mut().for_each(&mut f),
+                other => f(other),
+            },
+            "additionalProperties"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames"
+            | "additionalItems"
+            | "unevaluatedItems"
+            | "unevaluatedProperties" => f(val),
+            _ => {}
         }
-        _ => {}
     }
 }
 
-fn add_additional_properties_false(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if map.get("type").and_then(|t| t.as_str()) == Some("object")
-                && map.contains_key("properties")
-            {
-                map.insert("additionalProperties".into(), Value::Bool(false));
-            }
-            for v in map.values_mut() {
-                add_additional_properties_false(v);
-            }
-        }
-        Value::Array(arr) => {
-            for v in arr {
-                add_additional_properties_false(v);
-            }
-        }
-        _ => {}
+/// Apply `f` to every schema object in `v`, parents before children.
+fn walk(v: &mut Value, f: &mut impl FnMut(&mut Map<String, Value>)) {
+    if let Some(map) = v.as_object_mut() {
+        f(map);
+        for_each_subschema(map, |s| walk(s, f));
     }
 }
 
-fn make_all_properties_required(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if map.get("type").and_then(|t| t.as_str()) == Some("object")
-                && let Some(props) = map.get("properties").and_then(|p| p.as_object())
-            {
-                let all_keys: Vec<Value> = props.keys().map(|k| Value::String(k.clone())).collect();
-                map.insert("required".into(), Value::Array(all_keys));
-            }
-            for v in map.values_mut() {
-                make_all_properties_required(v);
-            }
+fn build(base: &Value, name: &str, dialect: Dialect) -> Value {
+    let mut v = base.clone();
+    match dialect {
+        Dialect::OpenAi => {
+            walk(&mut v, &mut |m| {
+                m.remove("title");
+                m.remove("format");
+                one_of_to_any_of(m);
+                close_object(m);
+            });
+            serde_json::json!({
+                "type": "json_schema",
+                "json_schema": { "name": name, "strict": true, "schema": v }
+            })
         }
-        Value::Array(arr) => {
-            for v in arr {
-                make_all_properties_required(v);
-            }
+        Dialect::AnthropicOutput => {
+            walk(&mut v, &mut |m| {
+                m.remove("title");
+                strip_unsupported_anthropic(m);
+                one_of_to_any_of(m);
+                close_object(m);
+            });
+            v
         }
-        _ => {}
+        Dialect::AnthropicTool => {
+            walk(&mut v, &mut |m| {
+                m.remove("title");
+            });
+            v
+        }
+        Dialect::Gemini => {
+            walk(&mut v, &mut |m| {
+                m.remove("title");
+                m.remove("format");
+                m.remove("additionalProperties");
+                nullable_for_gemini(m);
+            });
+            v
+        }
+        Dialect::GeminiJson => v,
+    }
+}
+
+fn is_object_type(m: &Map<String, Value>) -> bool {
+    m.get("type").and_then(Value::as_str) == Some("object")
+}
+
+/// Strict modes: no extra keys, every property listed in `required`.
+/// Optional fields stay optional through their nullable type.
+fn close_object(m: &mut Map<String, Value>) {
+    if !is_object_type(m) {
+        return;
+    }
+    let Some(props) = m.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    let keys: Vec<Value> = props.keys().map(|k| Value::String(k.clone())).collect();
+    m.insert("required".into(), Value::Array(keys));
+    m.insert("additionalProperties".into(), Value::Bool(false));
+}
+
+fn one_of_to_any_of(m: &mut Map<String, Value>) {
+    if !m.contains_key("anyOf")
+        && let Some(v) = m.remove("oneOf")
+    {
+        m.insert("anyOf".into(), v);
+    }
+}
+
+// keywords anthropic structured output rejects with a 400
+fn strip_unsupported_anthropic(m: &mut Map<String, Value>) {
+    for k in [
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "maxItems",
+        "uniqueItems",
+        "minProperties",
+        "maxProperties",
+    ] {
+        m.remove(k);
+    }
+    if m.get("minItems")
+        .and_then(Value::as_u64)
+        .is_some_and(|n| n > 1)
+    {
+        m.remove("minItems");
+    }
+    const FORMATS: [&str; 10] = [
+        "date-time",
+        "time",
+        "date",
+        "duration",
+        "email",
+        "hostname",
+        "uri",
+        "ipv4",
+        "ipv6",
+        "uuid",
+    ];
+    if m.get("format")
+        .and_then(Value::as_str)
+        .is_some_and(|f| !FORMATS.contains(&f))
+    {
+        m.remove("format");
+    }
+}
+
+/// `"type": ["T", "null"]` and `anyOf: [X, {"type": "null"}]` become
+/// `nullable: true`, which is how Gemini's OpenAPI subset spells optional.
+fn nullable_for_gemini(m: &mut Map<String, Value>) {
+    if let Some(Value::Array(types)) = m.get("type")
+        && types.len() == 2
+        && let Some(idx) = types.iter().position(|t| t.as_str() == Some("null"))
+    {
+        let real = types[1 - idx].clone();
+        m.insert("type".into(), real);
+        m.insert("nullable".into(), Value::Bool(true));
+    }
+    let null_pos = m.get("anyOf").and_then(Value::as_array).and_then(|vs| {
+        if vs.len() != 2 {
+            return None;
+        }
+        vs.iter()
+            .position(|v| v.get("type").and_then(Value::as_str) == Some("null"))
+    });
+    if let Some(idx) = null_pos
+        && let Some(Value::Array(mut vs)) = m.remove("anyOf")
+        && let Value::Object(inner) = vs.swap_remove(1 - idx)
+    {
+        for (k, v) in inner {
+            m.entry(k).or_insert(v);
+        }
+        m.insert("nullable".into(), Value::Bool(true));
+        // the merged schema may itself use the type-array form
+        nullable_for_gemini(m);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use schemars::JsonSchema;
-
-    #[derive(JsonSchema)]
-    struct Simple {
-        name: String,
-        age: u32,
-    }
-
-    #[derive(JsonSchema)]
-    struct WithOption {
-        name: String,
-        email: Option<String>,
-    }
-
-    #[derive(JsonSchema)]
-    struct Nested {
-        contact: Simple,
-        tags: Vec<String>,
-    }
-
-    #[test]
-    fn test_from_schema_removes_meta() {
-        let schema = schemars::schema_for!(Simple);
-        let value = from_schema(&schema);
-        assert!(value.get("$schema").is_none());
-    }
-
-    #[test]
-    fn test_from_schema_inlines_refs() {
-        let schema = schemars::schema_for!(Nested);
-        let value = from_schema(&schema);
-        assert!(value.get("$defs").is_none());
-        let json = serde_json::to_string(&value).unwrap();
-        assert!(!json.contains("$ref"));
-    }
-
-    #[test]
-    fn test_openai_strict_mode() {
-        let schema = schemars::schema_for!(WithOption);
-        let wrapped = wrap_for_openai(&schema, "WithOption");
-        let js = &wrapped["json_schema"];
-        assert_eq!(js["name"], "WithOption");
-        assert_eq!(js["strict"], true);
-
-        let schema_val = &js["schema"];
-        assert!(schema_val.get("title").is_none());
-        assert_eq!(schema_val["additionalProperties"], false);
-
-        let required = schema_val["required"].as_array().unwrap();
-        assert!(required.contains(&Value::String("name".into())));
-        assert!(required.contains(&Value::String("email".into())));
-    }
-
-    #[test]
-    fn test_anthropic_schema() {
-        let schema = schemars::schema_for!(Simple);
-        let value = clean_for_anthropic(&schema);
-        assert!(value.get("title").is_none());
-        assert!(value.get("$schema").is_none());
-        assert_eq!(value["type"], "object");
-    }
-
-    #[test]
-    fn test_nested_additional_properties() {
-        let schema = schemars::schema_for!(Nested);
-        let wrapped = wrap_for_openai(&schema, "Nested");
-        let schema_val = &wrapped["json_schema"]["schema"];
-        assert_eq!(schema_val["additionalProperties"], false);
-
-        let contact_schema = &schema_val["properties"]["contact"];
-        assert_eq!(contact_schema["additionalProperties"], false);
-    }
-
-    #[test]
-    fn test_gemini_schema_basic() {
-        let schema = schemars::schema_for!(Simple);
-        let value = clean_for_gemini(&schema);
-        assert!(value.get("title").is_none());
-        assert!(value.get("format").is_none());
-        assert!(value.get("additionalProperties").is_none());
-        assert_eq!(value["type"], "object");
-    }
-
-    #[test]
-    fn test_gemini_schema_nullable() {
-        let schema = schemars::schema_for!(WithOption);
-        let value = clean_for_gemini(&schema);
-        let email = &value["properties"]["email"];
-        assert_eq!(email["nullable"], true);
-        assert!(email.get("anyOf").is_none());
-        // should have a single type string, not an array
-        assert!(email["type"].is_string());
-        assert_eq!(email["type"], "string");
-    }
-
-    #[test]
-    fn test_gemini_schema_no_additional_properties() {
-        let schema = schemars::schema_for!(Nested);
-        let value = clean_for_gemini(&schema);
-        let json = serde_json::to_string(&value).unwrap();
-        assert!(!json.contains("additionalProperties"));
-    }
-
-    #[test]
-    fn test_gemini_schema_nested() {
-        let schema = schemars::schema_for!(Nested);
-        let value = clean_for_gemini(&schema);
-        let contact = &value["properties"]["contact"];
-        assert_eq!(contact["type"], "object");
-        assert!(contact.get("title").is_none());
-    }
-}
+#[path = "schema_tests.rs"]
+mod tests;

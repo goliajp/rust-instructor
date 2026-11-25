@@ -1,343 +1,403 @@
-use schemars::Schema;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
-use super::{ImageInput, Message, RawResponse, StreamCallback};
+use super::{DeltaSink, ImageInput, Message, RawResponse, RequestSpec, Stop, http};
 use crate::error::{Error, Result};
-use crate::schema;
+use crate::reasoning::{Effort, Reasoning};
+use crate::schema::Dialect;
+
+const DEFAULT_MAX_TOKENS: u32 = 16384;
+const SYSTEM: &str = "Extract the requested information from the given text.";
+const TOOL_HINT: &str = " Answer by calling the `extract` tool.";
 
 #[derive(Serialize)]
-struct Request {
-    model: String,
+struct Request<'a> {
+    model: &'a str,
     max_tokens: u32,
-    messages: Vec<AntMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    messages: Vec<AntMessage<'a>>,
+    system: &'a str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<Tool>,
+    tools: Vec<Tool<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    output_config: Option<OutputConfig>,
+    output_config: Option<OutputConfig<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
 }
 
-/// Anthropic native structured outputs — the schema constrains the response
-/// text directly, no tool round-trip.
 #[derive(Serialize)]
-struct OutputConfig {
-    format: OutputFormat,
+struct OutputConfig<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<OutputFormat<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'static str>,
 }
 
 #[derive(Serialize)]
-struct OutputFormat {
+struct OutputFormat<'a> {
     #[serde(rename = "type")]
-    format_type: String,
-    schema: serde_json::Value,
+    kind: &'static str,
+    schema: &'a RawValue,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Thinking {
+    Adaptive,
+    Enabled { budget_tokens: u32 },
+    Disabled,
 }
 
 #[derive(Serialize)]
-struct AntMessage {
-    role: String,
-    content: AntContent,
+struct AntMessage<'a> {
+    role: &'a str,
+    content: AntContent<'a>,
 }
 
-// anthropic accepts either a plain string or an array of content blocks
 #[derive(Serialize)]
 #[serde(untagged)]
-enum AntContent {
-    Text(String),
-    Blocks(Vec<AntContentBlock>),
+enum AntContent<'a> {
+    Text(&'a str),
+    Blocks(Vec<AntBlock<'a>>),
 }
 
 #[derive(Serialize)]
-#[serde(tag = "type")]
-enum AntContentBlock {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(rename = "image")]
-    Image { source: AntImageSource },
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AntBlock<'a> {
+    Text { text: &'a str },
+    Image { source: ImageSource<'a> },
 }
 
 #[derive(Serialize)]
-#[serde(tag = "type")]
-enum AntImageSource {
-    #[serde(rename = "base64")]
-    Base64 { media_type: String, data: String },
-    #[serde(rename = "url")]
-    Url { url: String },
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ImageSource<'a> {
+    Base64 { media_type: &'a str, data: &'a str },
+    Url { url: &'a str },
 }
 
 #[derive(Serialize)]
-struct Tool {
-    name: String,
-    description: String,
-    input_schema: serde_json::Value,
+struct Tool<'a> {
+    name: &'static str,
+    description: &'static str,
+    input_schema: &'a RawValue,
 }
 
 #[derive(Serialize)]
-struct ToolChoice {
-    #[serde(rename = "type")]
-    choice_type: String,
-    name: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ToolChoice {
+    Tool { name: &'static str },
+    Auto,
 }
 
 #[derive(Deserialize)]
-struct Response {
-    content: Vec<ContentBlock>,
+struct Response<'a> {
+    #[serde(borrow, default)]
+    content: Vec<Block<'a>>,
+    stop_reason: Option<String>,
     usage: Option<UsageInfo>,
 }
 
 #[derive(Deserialize)]
-struct ContentBlock {
+struct Block<'a> {
     #[serde(rename = "type")]
-    block_type: String,
-    #[serde(default)]
-    input: Option<serde_json::Value>,
+    kind: String,
+    #[serde(borrow, default)]
+    input: Option<&'a RawValue>,
     #[serde(default)]
     text: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct UsageInfo {
+    #[serde(default)]
     input_tokens: u32,
+    #[serde(default)]
     output_tokens: u32,
 }
 
-// streaming event types
 #[derive(Deserialize)]
 struct StreamEvent {
     #[serde(rename = "type")]
-    event_type: String,
-    #[serde(default)]
+    kind: String,
     delta: Option<StreamDelta>,
-    #[serde(default)]
     usage: Option<UsageInfo>,
-    #[serde(default)]
     message: Option<StreamMessage>,
 }
 
 #[derive(Deserialize)]
 struct StreamDelta {
     #[serde(rename = "type")]
-    #[serde(default)]
-    delta_type: Option<String>,
-    #[serde(default)]
+    kind: Option<String>,
     partial_json: Option<String>,
-    #[serde(default)]
     text: Option<String>,
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct StreamMessage {
-    #[serde(default)]
     usage: Option<UsageInfo>,
 }
 
-fn build_content(msg: &Message) -> AntContent {
+fn build_content(msg: &Message) -> AntContent<'_> {
     if msg.images.is_empty() {
-        return AntContent::Text(msg.content.clone());
+        return AntContent::Text(&msg.content);
     }
-
-    let mut blocks = Vec::with_capacity(msg.images.len() + 1);
     // images first, then text (anthropic convention)
-    for img in &msg.images {
-        let source = match img {
-            ImageInput::Url(u) => AntImageSource::Url { url: u.clone() },
-            ImageInput::Base64 { media_type, data } => AntImageSource::Base64 {
-                media_type: media_type.clone(),
-                data: data.clone(),
+    let mut blocks: Vec<AntBlock<'_>> = msg
+        .images
+        .iter()
+        .map(|img| AntBlock::Image {
+            source: match img {
+                ImageInput::Url(url) => ImageSource::Url { url },
+                ImageInput::Base64 { media_type, data } => ImageSource::Base64 { media_type, data },
             },
-        };
-        blocks.push(AntContentBlock::Image { source });
-    }
-    blocks.push(AntContentBlock::Text {
-        text: msg.content.clone(),
-    });
+        })
+        .collect();
+    blocks.push(AntBlock::Text { text: &msg.content });
     AntContent::Blocks(blocks)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn send_anthropic(
-    http: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
-    system: Option<&str>,
-    messages: &[Message],
-    schema: &Schema,
-    max_tokens: u32,
-    structured_output: bool,
-    on_stream: StreamCallback<'_>,
-) -> Result<RawResponse> {
-    let streaming = on_stream.is_some();
-
-    let ant_messages: Vec<AntMessage> = messages
-        .iter()
-        .map(|m| AntMessage {
-            role: m.role.clone(),
-            content: build_content(m),
-        })
-        .collect();
-
-    let sys_text = system.unwrap_or("Extract the requested information from the given text.");
-
-    let (tools, tool_choice, output_config) = if structured_output {
-        let config = OutputConfig {
-            format: OutputFormat {
-                format_type: "json_schema".into(),
-                schema: schema::clean_for_anthropic_structured(schema),
-            },
-        };
-        (Vec::new(), None, Some(config))
-    } else {
-        let tool = Tool {
-            name: "extract".into(),
-            description: "Extract structured data from the input".into(),
-            input_schema: schema::clean_for_anthropic(schema),
-        };
-        let choice = ToolChoice {
-            choice_type: "tool".into(),
-            name: "extract".into(),
-        };
-        (vec![tool], Some(choice), None)
-    };
-
-    let body = Request {
-        model: model.into(),
-        max_tokens,
-        messages: ant_messages,
-        system: Some(sys_text.into()),
-        tools,
-        tool_choice,
-        output_config,
-        stream: streaming,
-    };
-
-    let resp = http
-        .post(format!("{base_url}/messages"))
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Api {
-            status: status.as_u16(),
-            message: text,
-        });
-    }
-
-    if streaming {
-        read_stream(resp, structured_output, on_stream.unwrap()).await
-    } else {
-        read_response(resp, structured_output).await
+fn thinking_for(r: Option<Reasoning>) -> (Option<Thinking>, Option<&'static str>) {
+    match r {
+        None => (None, None),
+        Some(Reasoning::Effort(e)) => {
+            let effort = match e {
+                Effort::Minimal => "low",
+                e => e.as_str(),
+            };
+            (Some(Thinking::Adaptive), Some(effort))
+        }
+        Some(Reasoning::Budget(n)) => (Some(Thinking::Enabled { budget_tokens: n }), None),
+        Some(Reasoning::Off) => (Some(Thinking::Disabled), None),
     }
 }
 
-async fn read_response(resp: reqwest::Response, structured_output: bool) -> Result<RawResponse> {
-    let data: Response = resp.json().await?;
-    let usage = data.usage.unwrap_or(UsageInfo {
-        input_tokens: 0,
-        output_tokens: 0,
-    });
+pub(crate) async fn send(
+    http: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    structured_output: bool,
+    spec: &RequestSpec<'_>,
+    on_delta: DeltaSink<'_>,
+) -> Result<RawResponse> {
+    // structured output cannot express recursive schemas; a tool can.
+    // forced tool choice is rejected by the newest models and whenever
+    // thinking is on, so the tool path asks for the call instead
+    let use_output = structured_output && !spec.schema.recursive();
+    let forced = !structured_output && spec.reasoning.is_none();
+    let (thinking, effort) = thinking_for(spec.reasoning);
 
-    // native structured output puts the payload in a `text` block, forced tool
-    // use in `tool_use.input`. Only the block the request asked for counts — a
-    // `text` block in tool-use mode is the model answering in prose instead of
-    // calling the tool, which is a hard failure, not a payload.
-    let content = if structured_output {
-        data.content
-            .into_iter()
-            .find(|b| b.block_type == "text")
-            .and_then(|b| b.text)
-            .ok_or_else(|| Error::Other("no text block in response".into()))?
+    let mut system = spec.system.unwrap_or(SYSTEM).to_string();
+    let (tools, tool_choice, format) = if use_output {
+        let format = OutputFormat {
+            kind: "json_schema",
+            schema: spec.schema.get(Dialect::AnthropicOutput),
+        };
+        (Vec::new(), None, Some(format))
     } else {
-        let tool_block = data
-            .content
-            .into_iter()
-            .find(|b| b.block_type == "tool_use")
-            .ok_or_else(|| Error::Other("no tool_use block in response".into()))?;
-        serde_json::to_string(&tool_block.input.unwrap_or(serde_json::Value::Null))?
+        let tool = Tool {
+            name: "extract",
+            description: "Extract structured data from the input",
+            input_schema: spec.schema.get(Dialect::AnthropicTool),
+        };
+        let choice = if forced {
+            ToolChoice::Tool { name: "extract" }
+        } else {
+            system.push_str(TOOL_HINT);
+            ToolChoice::Auto
+        };
+        (vec![tool], Some(choice), None)
+    };
+    let output_config =
+        (format.is_some() || effort.is_some()).then_some(OutputConfig { format, effort });
+
+    let body = Request {
+        model: spec.model,
+        max_tokens: spec.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+        messages: spec
+            .messages
+            .iter()
+            .map(|m| AntMessage {
+                role: &m.role,
+                content: build_content(m),
+            })
+            .collect(),
+        system: &system,
+        tools,
+        tool_choice,
+        output_config,
+        thinking,
+        stream: on_delta.is_some(),
     };
 
+    let req = http
+        .post(format!("{base_url}/messages"))
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01");
+    let resp = http::post(req, &body).await?;
+
+    let mode = match (use_output, forced) {
+        (true, _) => Mode::Output,
+        (false, true) => Mode::ForcedTool,
+        (false, false) => Mode::AutoTool,
+    };
+    match on_delta {
+        Some(sink) => read_stream(resp, use_output, sink).await,
+        None => read_response(resp, mode).await,
+    }
+}
+
+fn finish(content: String, usage: UsageInfo, stop_reason: Option<&str>) -> Result<RawResponse> {
+    let stop = match stop_reason {
+        Some("refusal") => {
+            let text = if content.is_empty() {
+                "stop_reason: refusal"
+            } else {
+                &content
+            };
+            return Err(Error::refused("anthropic", text));
+        }
+        Some(r @ ("max_tokens" | "model_context_window_exceeded")) => {
+            Stop::Truncated(format!("stop_reason: {r}"))
+        }
+        _ => Stop::Done,
+    };
     Ok(RawResponse {
         content,
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
+        stop,
     })
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Output,
+    ForcedTool,
+    AutoTool,
+}
+
+async fn read_response(resp: reqwest::Response, mode: Mode) -> Result<RawResponse> {
+    let bytes = resp.bytes().await?;
+    let data: Response<'_> = serde_json::from_slice(&bytes)?;
+    let mut texts = data
+        .content
+        .iter()
+        .filter(|b| b.kind == "text")
+        .filter_map(|b| b.text.as_deref())
+        .peekable();
+    let has_text = texts.peek().is_some();
+    let text: String = texts.collect();
+    let tool_input = data
+        .content
+        .iter()
+        .find_map(|b| b.input.filter(|_| b.kind == "tool_use"));
+    let truncated = matches!(
+        data.stop_reason.as_deref(),
+        Some("max_tokens" | "model_context_window_exceeded")
+    );
+    let content = match (mode, tool_input) {
+        _ if data.stop_reason.as_deref() == Some("refusal") => text,
+        (Mode::Output, _) if !has_text && !truncated => {
+            return Err(Error::Other("no text block in response".into()));
+        }
+        (Mode::Output, _) => text,
+        (_, Some(input)) => input.get().to_string(),
+        (Mode::ForcedTool, None) if !truncated => {
+            return Err(Error::Other("no tool_use block in response".into()));
+        }
+        // the model answered in prose instead of calling the tool; kept so
+        // the retry message can quote it
+        (_, None) => text,
+    };
+    finish(
+        content,
+        data.usage.unwrap_or_default(),
+        data.stop_reason.as_deref(),
+    )
 }
 
 async fn read_stream(
     resp: reqwest::Response,
-    structured_output: bool,
-    callback: &(dyn Fn(&str) + Send + Sync),
+    use_output: bool,
+    sink: &mut (dyn FnMut(&str) + Send),
 ) -> Result<RawResponse> {
-    use futures::StreamExt;
-
-    let mut accumulated = String::new();
-    let mut input_tokens = 0u32;
-    let mut output_tokens = 0u32;
-    let mut stream = resp.bytes_stream();
-    let mut buffer = String::new();
-
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-        // process complete SSE lines
-        while let Some(pos) = buffer.find('\n') {
-            let line: String = buffer[..pos].trim_end_matches('\r').into();
-            buffer.drain(..pos + 1);
-
-            if line.is_empty() || line.starts_with(':') || line.starts_with("event:") {
-                continue;
-            }
-
-            if let Some(data) = line.strip_prefix("data: ")
-                && let Ok(event) = serde_json::from_str::<StreamEvent>(data)
-            {
-                match event.event_type.as_str() {
-                    "message_start" => {
-                        if let Some(msg) = event.message
-                            && let Some(usage) = msg.usage
-                        {
-                            input_tokens = usage.input_tokens;
-                        }
-                    }
-                    // native structured output streams the payload as
-                    // `text_delta`, forced tool use as `input_json_delta`
-                    "content_block_delta" => {
-                        if let Some(delta) = event.delta
-                            && let Some(partial) =
-                                match (structured_output, delta.delta_type.as_deref()) {
-                                    (true, Some("text_delta")) => delta.text,
-                                    (false, Some("input_json_delta")) => delta.partial_json,
-                                    _ => None,
-                                }
-                        {
-                            callback(&partial);
-                            accumulated.push_str(&partial);
-                        }
-                    }
-                    "message_delta" => {
-                        if let Some(usage) = event.usage {
-                            output_tokens = usage.output_tokens;
-                        }
-                    }
-                    _ => {}
+    let mut content = String::new();
+    let mut usage = UsageInfo::default();
+    let mut stop_reason = None;
+    http::read_sse(resp, |data| {
+        let Ok(event) = serde_json::from_str::<StreamEvent>(data) else {
+            return;
+        };
+        match event.kind.as_str() {
+            "message_start" => {
+                if let Some(u) = event.message.and_then(|m| m.usage) {
+                    usage.input_tokens = u.input_tokens;
                 }
             }
+            // structured output streams `text_delta`, a tool `input_json_delta`
+            "content_block_delta" => {
+                let Some(delta) = event.delta else { return };
+                let piece = match (use_output, delta.kind.as_deref()) {
+                    (true, Some("text_delta")) => delta.text,
+                    (false, Some("input_json_delta")) => delta.partial_json,
+                    _ => None,
+                };
+                if let Some(p) = piece {
+                    sink(&p);
+                    content.push_str(&p);
+                }
+            }
+            "message_delta" => {
+                if let Some(u) = event.usage {
+                    usage.output_tokens = u.output_tokens;
+                }
+                if let Some(r) = event.delta.and_then(|d| d.stop_reason) {
+                    stop_reason = Some(r);
+                }
+            }
+            _ => {}
         }
-    }
-
-    Ok(RawResponse {
-        content: accumulated,
-        input_tokens,
-        output_tokens,
     })
+    .await?;
+    finish(content, usage, stop_reason.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thinking_mapping() {
+        assert_eq!(thinking_for(None), (None, None));
+        assert_eq!(
+            thinking_for(Some(Reasoning::Effort(Effort::Minimal))),
+            (Some(Thinking::Adaptive), Some("low"))
+        );
+        assert_eq!(
+            thinking_for(Some(Reasoning::Effort(Effort::Max))),
+            (Some(Thinking::Adaptive), Some("max"))
+        );
+        assert_eq!(
+            thinking_for(Some(Reasoning::Budget(2048))),
+            (
+                Some(Thinking::Enabled {
+                    budget_tokens: 2048
+                }),
+                None
+            )
+        );
+        assert_eq!(
+            thinking_for(Some(Reasoning::Off)),
+            (Some(Thinking::Disabled), None)
+        );
+        let v = serde_json::to_value(Thinking::Enabled { budget_tokens: 9 }).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"type": "enabled", "budget_tokens": 9})
+        );
+    }
 }

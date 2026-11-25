@@ -1,75 +1,93 @@
-use schemars::Schema;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
-use super::{ImageInput, Message, RawResponse, StreamCallback};
+use super::{DEFAULT_SYSTEM, DeltaSink, ImageInput, Message, RawResponse, RequestSpec, Stop, http};
 use crate::error::{Error, Result};
-use crate::schema;
+use crate::reasoning::{Effort, Reasoning};
+use crate::schema::Dialect;
+
+const DEFAULT_MAX_TOKENS: u32 = 16384;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Request {
-    contents: Vec<GemContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system_instruction: Option<GemContent>,
-    generation_config: GenerationConfig,
+struct Request<'a> {
+    contents: Vec<GemContent<'a>>,
+    system_instruction: GemContent<'a>,
+    generation_config: GenerationConfig<'a>,
 }
 
 #[derive(Serialize)]
-struct GemContent {
-    role: String,
-    parts: Vec<GemPart>,
+struct GemContent<'a> {
+    role: &'a str,
+    parts: Vec<GemPart<'a>>,
 }
 
 #[derive(Serialize)]
 #[serde(untagged)]
-enum GemPart {
+enum GemPart<'a> {
     Text {
-        text: String,
+        text: &'a str,
     },
     InlineData {
         #[serde(rename = "inlineData")]
-        inline_data: InlineData,
+        inline_data: InlineData<'a>,
     },
     FileData {
         #[serde(rename = "fileData")]
-        file_data: FileData,
+        file_data: FileData<'a>,
     },
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InlineData {
-    mime_type: String,
-    data: String,
+struct InlineData<'a> {
+    mime_type: &'a str,
+    data: &'a str,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FileData {
-    file_uri: String,
+struct FileData<'a> {
+    file_uri: &'a str,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GenerationConfig {
+struct GenerationConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    max_output_tokens: u32,
+    response_mime_type: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_output_tokens: Option<u32>,
-    response_mime_type: String,
-    response_schema: serde_json::Value,
+    response_schema: Option<&'a RawValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_json_schema: Option<&'a RawValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<ThinkingConfig>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct ThinkingConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_budget: Option<u32>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Response {
     candidates: Option<Vec<Candidate>>,
-    #[serde(rename = "usageMetadata")]
     usage_metadata: Option<UsageMetadata>,
+    prompt_feedback: Option<PromptFeedback>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Candidate {
     content: Option<CandidateContent>,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -80,206 +98,218 @@ struct CandidateContent {
 #[derive(Deserialize)]
 struct ResponsePart {
     text: Option<String>,
+    #[serde(default)]
+    thought: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct UsageMetadata {
     #[serde(default)]
     prompt_token_count: u32,
     #[serde(default)]
     candidates_token_count: u32,
+    // billed as output
+    #[serde(default)]
+    thoughts_token_count: u32,
 }
 
-fn build_parts(msg: &Message) -> Vec<GemPart> {
-    let mut parts = Vec::with_capacity(1 + msg.images.len());
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptFeedback {
+    block_reason: Option<String>,
+}
 
-    for img in &msg.images {
-        match img {
-            ImageInput::Base64 { media_type, data } => {
-                parts.push(GemPart::InlineData {
-                    inline_data: InlineData {
-                        mime_type: media_type.clone(),
-                        data: data.clone(),
-                    },
-                });
-            }
-            ImageInput::Url(url) => {
-                parts.push(GemPart::FileData {
-                    file_data: FileData {
-                        file_uri: url.clone(),
-                    },
-                });
+fn build_parts(msg: &Message) -> Vec<GemPart<'_>> {
+    let mut parts: Vec<GemPart<'_>> = msg
+        .images
+        .iter()
+        .map(|img| match img {
+            ImageInput::Base64 { media_type, data } => GemPart::InlineData {
+                inline_data: InlineData {
+                    mime_type: media_type,
+                    data,
+                },
+            },
+            ImageInput::Url(url) => GemPart::FileData {
+                file_data: FileData { file_uri: url },
+            },
+        })
+        .collect();
+    parts.push(GemPart::Text { text: &msg.content });
+    parts
+}
+
+fn thinking_config(r: Option<Reasoning>) -> Option<ThinkingConfig> {
+    let (level, budget) = match r? {
+        Reasoning::Effort(e) => {
+            let level = match e {
+                Effort::Minimal => "MINIMAL",
+                Effort::Low => "LOW",
+                Effort::Medium => "MEDIUM",
+                Effort::High => "HIGH",
+                _ => "XHIGH",
+            };
+            (Some(level), None)
+        }
+        Reasoning::Budget(n) => (None, Some(n)),
+        Reasoning::Off => (None, Some(0)),
+    };
+    Some(ThinkingConfig {
+        thinking_level: level,
+        thinking_budget: budget,
+    })
+}
+
+pub(crate) async fn send(
+    http: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    spec: &RequestSpec<'_>,
+    on_delta: DeltaSink<'_>,
+) -> Result<RawResponse> {
+    // `responseSchema` has no `$ref`, so a recursive type goes as JSON Schema
+    let (response_schema, response_json_schema) = if spec.schema.recursive() {
+        (None, Some(spec.schema.get(Dialect::GeminiJson)))
+    } else {
+        (Some(spec.schema.get(Dialect::Gemini)), None)
+    };
+    let body = Request {
+        contents: spec
+            .messages
+            .iter()
+            .map(|m| GemContent {
+                role: if m.role == "assistant" {
+                    "model"
+                } else {
+                    &m.role
+                },
+                parts: build_parts(m),
+            })
+            .collect(),
+        system_instruction: GemContent {
+            role: "user",
+            parts: vec![GemPart::Text {
+                text: spec.system.unwrap_or(DEFAULT_SYSTEM),
+            }],
+        },
+        generation_config: GenerationConfig {
+            temperature: spec.temperature,
+            max_output_tokens: spec.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+            response_mime_type: "application/json",
+            response_schema,
+            response_json_schema,
+            thinking_config: thinking_config(spec.reasoning),
+        },
+    };
+
+    // the key goes in a header so it never appears in a url or an error
+    let url = match on_delta {
+        Some(_) => format!(
+            "{base_url}/models/{}:streamGenerateContent?alt=sse",
+            spec.model
+        ),
+        None => format!("{base_url}/models/{}:generateContent", spec.model),
+    };
+    let req = http.post(url).header("x-goog-api-key", api_key);
+    let resp = http::post(req, &body).await?;
+
+    match on_delta {
+        Some(sink) => read_stream(resp, sink).await,
+        None => {
+            let data: Response = http::json(resp).await?;
+            let mut acc = Acc::default();
+            acc.add(data, &mut |_| {});
+            acc.finish()
+        }
+    }
+}
+
+#[derive(Default)]
+struct Acc {
+    content: String,
+    usage: UsageMetadata,
+    finish_reason: Option<String>,
+    block_reason: Option<String>,
+}
+
+impl Acc {
+    fn add(&mut self, r: Response, sink: &mut dyn FnMut(&str)) {
+        if let Some(u) = r.usage_metadata {
+            self.usage = u;
+        }
+        if let Some(b) = r.prompt_feedback.and_then(|f| f.block_reason) {
+            self.block_reason = Some(b);
+        }
+        let Some(c) = r.candidates.and_then(|c| c.into_iter().next()) else {
+            return;
+        };
+        if let Some(f) = c.finish_reason {
+            self.finish_reason = Some(f);
+        }
+        let parts = c.content.and_then(|c| c.parts).unwrap_or_default();
+        for p in parts.into_iter().filter(|p| !p.thought) {
+            if let Some(t) = p.text {
+                sink(&t);
+                self.content.push_str(&t);
             }
         }
     }
 
-    parts.push(GemPart::Text {
-        text: msg.content.clone(),
-    });
-
-    parts
-}
-
-fn gemini_role(role: &str) -> &str {
-    match role {
-        "assistant" => "model",
-        other => other,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn send_gemini(
-    http: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
-    system: Option<&str>,
-    messages: &[Message],
-    schema: &Schema,
-    temperature: Option<f64>,
-    max_tokens: u32,
-    on_stream: StreamCallback<'_>,
-) -> Result<RawResponse> {
-    let streaming = on_stream.is_some();
-
-    let contents: Vec<GemContent> = messages
-        .iter()
-        .map(|m| GemContent {
-            role: gemini_role(&m.role).into(),
-            parts: build_parts(m),
+    fn finish(self) -> Result<RawResponse> {
+        if let Some(b) = self.block_reason {
+            return Err(Error::refused("gemini", &format!("prompt blocked: {b}")));
+        }
+        let stop = match self.finish_reason.as_deref() {
+            Some("MAX_TOKENS") => Stop::Truncated("finishReason: MAX_TOKENS".into()),
+            Some(
+                r @ ("SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII"
+                | "IMAGE_SAFETY"),
+            ) => return Err(Error::refused("gemini", &format!("finishReason: {r}"))),
+            _ => Stop::Done,
+        };
+        Ok(RawResponse {
+            content: self.content,
+            input_tokens: self.usage.prompt_token_count,
+            output_tokens: self.usage.candidates_token_count + self.usage.thoughts_token_count,
+            stop,
         })
-        .collect();
-
-    let sys = system
-        .unwrap_or("Extract the requested information from the given text. Return valid JSON matching the provided schema.");
-
-    let system_instruction = GemContent {
-        role: "user".into(),
-        parts: vec![GemPart::Text { text: sys.into() }],
-    };
-
-    let response_schema = schema::clean_for_gemini(schema);
-
-    let body = Request {
-        contents,
-        system_instruction: Some(system_instruction),
-        generation_config: GenerationConfig {
-            temperature,
-            max_output_tokens: Some(max_tokens),
-            response_mime_type: "application/json".into(),
-            response_schema,
-        },
-    };
-
-    let method = if streaming {
-        "streamGenerateContent"
-    } else {
-        "generateContent"
-    };
-
-    let url = if streaming {
-        format!("{base_url}/models/{model}:{method}?alt=sse&key={api_key}")
-    } else {
-        format!("{base_url}/models/{model}:{method}?key={api_key}")
-    };
-
-    let resp = http
-        .post(&url)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Api {
-            status: status.as_u16(),
-            message: text,
-        });
     }
-
-    if streaming {
-        read_stream(resp, on_stream.unwrap()).await
-    } else {
-        read_response(resp).await
-    }
-}
-
-async fn read_response(resp: reqwest::Response) -> Result<RawResponse> {
-    let data: Response = resp.json().await?;
-    let usage = data.usage_metadata.unwrap_or(UsageMetadata {
-        prompt_token_count: 0,
-        candidates_token_count: 0,
-    });
-
-    let text = data
-        .candidates
-        .and_then(|c| c.into_iter().next())
-        .and_then(|c| c.content)
-        .and_then(|c| c.parts)
-        .and_then(|p| p.into_iter().next())
-        .and_then(|p| p.text)
-        .ok_or_else(|| Error::Other("no content in gemini response".into()))?;
-
-    Ok(RawResponse {
-        content: text,
-        input_tokens: usage.prompt_token_count,
-        output_tokens: usage.candidates_token_count,
-    })
 }
 
 async fn read_stream(
     resp: reqwest::Response,
-    callback: &(dyn Fn(&str) + Send + Sync),
+    sink: &mut (dyn FnMut(&str) + Send),
 ) -> Result<RawResponse> {
-    use futures::StreamExt;
-
-    let mut accumulated = String::new();
-    let mut input_tokens = 0u32;
-    let mut output_tokens = 0u32;
-    let mut stream = resp.bytes_stream();
-    let mut buffer = String::new();
-
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-        while let Some(pos) = buffer.find('\n') {
-            let line: String = buffer[..pos].trim_end_matches('\r').into();
-            buffer.drain(..pos + 1);
-
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
-
-            if let Some(data) = line.strip_prefix("data: ")
-                && let Ok(event) = serde_json::from_str::<Response>(data)
-            {
-                if let Some(usage) = event.usage_metadata {
-                    input_tokens = usage.prompt_token_count;
-                    output_tokens = usage.candidates_token_count;
-                }
-
-                if let Some(text) = event
-                    .candidates
-                    .and_then(|c| c.into_iter().next())
-                    .and_then(|c| c.content)
-                    .and_then(|c| c.parts)
-                    .and_then(|p| p.into_iter().next())
-                    .and_then(|p| p.text)
-                {
-                    callback(&text);
-                    accumulated.push_str(&text);
-                }
-            }
+    let mut acc = Acc::default();
+    http::read_sse(resp, |data| {
+        if let Ok(event) = serde_json::from_str::<Response>(data) {
+            acc.add(event, &mut *sink);
         }
-    }
-
-    Ok(RawResponse {
-        content: accumulated,
-        input_tokens,
-        output_tokens,
     })
+    .await?;
+    acc.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thinking_mapping() {
+        assert_eq!(thinking_config(None), None);
+        let level = |e| {
+            thinking_config(Some(Reasoning::Effort(e)))
+                .unwrap()
+                .thinking_level
+        };
+        assert_eq!(level(Effort::Minimal), Some("MINIMAL"));
+        assert_eq!(level(Effort::XHigh), Some("XHIGH"));
+        assert_eq!(level(Effort::Max), Some("XHIGH"));
+        let off = thinking_config(Some(Reasoning::Off)).unwrap();
+        assert_eq!(off.thinking_budget, Some(0));
+        assert_eq!(off.thinking_level, None);
+        let v = serde_json::to_value(thinking_config(Some(Reasoning::Budget(1024)))).unwrap();
+        assert_eq!(v, serde_json::json!({"thinkingBudget": 1024}));
+    }
 }

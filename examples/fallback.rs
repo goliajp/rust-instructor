@@ -9,6 +9,7 @@
 
 use instructors::prelude::*;
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Contact {
     name: String,

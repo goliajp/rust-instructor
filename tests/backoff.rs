@@ -4,6 +4,7 @@ use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Contact {
     name: String,

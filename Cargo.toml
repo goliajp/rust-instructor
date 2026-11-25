@@ -14,7 +14,7 @@ readme = "README.md"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 schemars = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 futures = "0.3"
@@ -27,7 +27,7 @@ rand = "0.10"
 # resolves the ids the provider APIs actually accept, which this crate used to
 # normalize itself, and 4.1.1 is where the vendor coverage behind those ids
 # caught up. 5.x brings the 2026-11 price table.
-tiktoken = { version = "5.1.1", optional = true, default-features = false }
+tiktoken = { version = "5.4", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
 jsonrepair = "0.1"
 
