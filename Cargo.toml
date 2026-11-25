@@ -11,30 +11,40 @@ keywords = ["llm", "structured-output", "openai", "anthropic", "gemini"]
 categories = ["api-bindings", "asynchronous", "parser-implementations"]
 readme = "README.md"
 
+[workspace]
+members = ["derive"]
+
 [dependencies]
+instructors-derive = { version = "=1.5.1", path = "derive", optional = true }
 serde = { version = "1", features = ["derive"] }
+# json facade backend until the in-house parser lands
 serde_json = { version = "1", features = ["raw_value"] }
-schemars = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
-futures = "0.3"
-tokio = { version = "1", features = ["sync", "time"] }
-thiserror = "2"
-rand = "0.10"
+# the reqwest feature: rustls with the ring provider, no system TLS library
+reqwest = { version = "0.13", optional = true, default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", optional = true, features = ["time"] }
+bytes = { version = "1", optional = true }
 # only `tiktoken::pricing` is used; without default features no vocabulary
 # data is linked
 tiktoken = { version = "5.4", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
 jsonrepair = "0.1"
+schemars = { version = "1", optional = true }
 
 [features]
-default = ["cost-tracking"]
-cost-tracking = ["tiktoken"]
+default = ["derive", "reqwest", "cost-tracking"]
+derive = ["dep:instructors-derive"]
+reqwest = ["dep:reqwest", "dep:rustls", "dep:tokio", "dep:bytes"]
+cost-tracking = ["dep:tiktoken"]
 tracing = ["dep:tracing"]
-# schema properties in declaration order; turns on `serde_json/preserve_order`
-# for every crate in the build
-preserve-order = ["schemars/preserve_order"]
+serde_json = []
+schemars = ["dep:schemars", "serde_json"]
+# kept so 1.5 manifests still build; 2.0 always keeps declaration order
+preserve-order = []
 
 [dev-dependencies]
+serde_json = "1"
+schemars = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 criterion = "0.8"

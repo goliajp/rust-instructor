@@ -1,6 +1,10 @@
 use super::*;
 use serde_json::{Value, json};
 
+fn val(v: PartialValue<'_>) -> Value {
+    serde_json::from_str(&v.to_json()).unwrap()
+}
+
 fn parse_in_pieces(doc: &str, size: usize) -> PartialParser {
     let mut p = PartialParser::new();
     let mut i = 0;
@@ -30,7 +34,7 @@ fn matches_serde_json_for_every_chunk_size() {
         for size in [1, 2, 3, 4, 7, 64, 4096] {
             let p = parse_in_pieces(doc, size);
             assert!(p.is_complete(), "{doc} size {size}");
-            assert_eq!(p.root().unwrap().to_value(), want, "{doc} size {size}");
+            assert_eq!(val(p.root().unwrap()), want, "{doc} size {size}");
         }
     }
 }
@@ -107,7 +111,7 @@ fn skips_text_around_the_root() {
     let mut p = PartialParser::new();
     p.feed("Here you go:\n```json\n{\"a\": [1, 2]}\n```\n");
     assert!(p.is_complete());
-    assert_eq!(p.root().unwrap().to_value(), json!({"a": [1, 2]}));
+    assert_eq!(val(p.root().unwrap()), json!({"a": [1, 2]}));
 }
 
 #[test]
@@ -115,7 +119,7 @@ fn stops_on_invalid_input() {
     let mut p = PartialParser::new();
     p.feed(r#"{"a": 1 "b": 2}"#);
     assert!(p.is_error());
-    assert_eq!(p.root().unwrap().to_value(), json!({"a": 1}));
+    assert_eq!(val(p.root().unwrap()), json!({"a": 1}));
 
     let mut p = PartialParser::new();
     p.feed(r#"{"a": [1}"#);
@@ -131,7 +135,7 @@ fn stops_on_invalid_input() {
 fn incomplete_number_converts_to_null() {
     let mut p = PartialParser::new();
     p.feed(r#"{"x": -"#);
-    assert_eq!(p.root().unwrap().to_value(), json!({"x": null}));
+    assert_eq!(val(p.root().unwrap()), json!({"x": null}));
 }
 
 #[test]
@@ -141,7 +145,7 @@ fn reset_allows_reuse() {
     p.reset();
     assert!(p.root().is_none());
     p.feed("[2]");
-    assert_eq!(p.root().unwrap().to_value(), json!([2]));
+    assert_eq!(val(p.root().unwrap()), json!([2]));
 }
 
 #[test]

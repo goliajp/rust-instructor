@@ -1,6 +1,5 @@
-//! Provider-ready JSON schemas, built once per type and cached as bytes.
-//!
-//! This module depends only on `schemars`, `serde_json` and `std`.
+//! The 1.5 schema pipeline (schemars, then normalization), kept as the
+//! reference the derive is compared against.
 
 use std::any::TypeId;
 use std::cell::RefCell;
@@ -13,7 +12,7 @@ use serde_json::{Map, Value};
 
 /// The schema shape each wire format expects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Dialect {
+pub(super) enum Dialect {
     /// OpenAI `response_format` object (`json_schema`, strict).
     OpenAi,
     /// Anthropic `output_config.format.schema`.
@@ -36,7 +35,7 @@ impl Dialect {
 
 /// One type's schema, normalized once, with each dialect's bytes built on
 /// first use.
-pub(crate) struct SchemaEntry {
+pub(super) struct SchemaEntry {
     name: String,
     recursive: bool,
     base: Value,
@@ -44,7 +43,7 @@ pub(crate) struct SchemaEntry {
 }
 
 impl SchemaEntry {
-    pub(crate) fn new(root: Value, name: &str, list: bool) -> Self {
+    pub(super) fn new(root: Value, name: &str, list: bool) -> Self {
         let (base, recursive) = normalize(root, list);
         Self {
             name: sanitize_name(name),
@@ -56,12 +55,12 @@ impl SchemaEntry {
 
     /// True when the schema refers to itself, which some dialects cannot
     /// express.
-    pub(crate) fn recursive(&self) -> bool {
+    pub(super) fn recursive(&self) -> bool {
         self.recursive
     }
 
     /// Serialized schema for `dialect`, built on first call.
-    pub(crate) fn get(&self, dialect: Dialect) -> &RawValue {
+    pub(super) fn get(&self, dialect: Dialect) -> &RawValue {
         self.built[dialect.index()].get_or_init(|| {
             let v = build(&self.base, &self.name, dialect);
             RawValue::from_string(v.to_string()).expect("serde_json output is valid json")
@@ -70,7 +69,7 @@ impl SchemaEntry {
 }
 
 /// Cached schema entry for `T`. `list` wraps the schema as `{"items": T}`.
-pub(crate) fn entry_for<T: JsonSchema + 'static>(list: bool) -> Arc<SchemaEntry> {
+pub(super) fn entry_for<T: JsonSchema + 'static>(list: bool) -> Arc<SchemaEntry> {
     thread_local! {
         static CACHE: RefCell<HashMap<(TypeId, bool), Arc<SchemaEntry>>> =
             RefCell::new(HashMap::new());
@@ -401,7 +400,3 @@ fn nullable_for_gemini(m: &mut Map<String, Value>) {
         nullable_for_gemini(m);
     }
 }
-
-#[cfg(test)]
-#[path = "schema_tests.rs"]
-mod tests;

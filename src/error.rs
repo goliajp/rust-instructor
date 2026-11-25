@@ -1,186 +1,272 @@
+use std::fmt;
 use std::time::Duration;
 
-use thiserror::Error;
+use crate::usage::Usage;
 
-#[derive(Debug, Error)]
+/// Why an extraction failed.
+///
+/// Every variant that comes after a request carries the [`Usage`] spent so
+/// far, so a failed extraction still reports what it cost
+/// ([`Error::usage`]).
+#[non_exhaustive]
+#[derive(Debug)]
 pub enum Error {
-    #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
-
-    #[error("json parse error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("api error ({status}): {message}")]
-    Api { status: u16, message: String },
-
-    #[error("extraction failed after {retries} retries: {message}")]
-    ExtractionFailed { retries: u32, message: String },
-
-    #[error("validation failed after {retries} retries: {message}")]
-    ValidationFailed { retries: u32, message: String },
-
-    #[error("request timed out after {0:?}")]
-    Timeout(Duration),
-
-    #[error("{0}")]
-    Other(String),
+    /// The request could not be sent or the response could not be read.
+    Transport {
+        provider: &'static str,
+        source: TransportError,
+        usage: Usage,
+    },
+    /// The provider answered with a non-success HTTP status.
+    Api {
+        provider: &'static str,
+        status: u16,
+        message: String,
+        retry_after: Option<Duration>,
+        usage: Usage,
+    },
+    /// The model declined to answer: an OpenAI `refusal`, an Anthropic
+    /// `stop_reason: refusal`, a Gemini safety stop or blocked prompt.
+    Refusal {
+        provider: &'static str,
+        text: String,
+        usage: Usage,
+    },
+    /// The answer hit the output token limit and did not parse. `raw` is
+    /// what arrived.
+    Truncated {
+        provider: &'static str,
+        reason: String,
+        raw: String,
+        usage: Usage,
+    },
+    /// The answer did not parse into the type after every attempt.
+    Parse {
+        provider: &'static str,
+        attempts: u32,
+        message: String,
+        raw: String,
+        usage: Usage,
+    },
+    /// The answer parsed but validation rejected it on every attempt.
+    Validation {
+        provider: &'static str,
+        attempts: u32,
+        message: String,
+        usage: Usage,
+    },
+    /// A setting the provider has no parameter for, such as
+    /// `Reasoning::Budget` on OpenAI. Nothing was sent.
+    Unsupported {
+        provider: &'static str,
+        what: String,
+    },
+    /// The overall timeout passed.
+    Timeout { after: Duration, usage: Usage },
+    /// The client has no transport: the crate was built without the
+    /// `reqwest` feature and no `with_transport` was given.
+    NoTransport,
+    /// Every provider failed. `error` is the last fallback's error and
+    /// `previous` the one before it, down to the primary's.
+    Fallback {
+        provider: &'static str,
+        error: Box<Error>,
+        previous: Box<Error>,
+    },
 }
 
+/// Shorthand for `Result<T, instructors::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
-const REFUSED: &str = "model refused (";
-const TRUNCATED: &str = "output truncated (";
+/// A failure below HTTP: connecting, sending, reading the body.
+#[derive(Debug)]
+pub struct TransportError {
+    message: String,
+    source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    retryable: bool,
+}
 
-impl Error {
-    pub(crate) fn refused(provider: &str, text: &str) -> Self {
-        Self::Other(format!("{REFUSED}{provider}): {text}"))
-    }
-
-    pub(crate) fn truncated(provider: &str, reason: &str) -> Self {
-        Self::Other(format!(
-            "{TRUNCATED}{provider}, {reason}): the answer hit the output token limit; \
-             raise max_tokens or lower the reasoning effort"
-        ))
-    }
-
-    /// Append the fallbacks' errors to the primary provider's error, keeping
-    /// the primary's variant where it has a message to extend.
-    pub(crate) fn with_fallback_failures(self, failures: &str) -> Self {
-        let note = format!(" [fallbacks failed: {failures}]");
-        match self {
-            Self::Api { status, message } => Self::Api {
-                status,
-                message: message + &note,
-            },
-            Self::ExtractionFailed { retries, message } => Self::ExtractionFailed {
-                retries,
-                message: message + &note,
-            },
-            Self::ValidationFailed { retries, message } => Self::ValidationFailed {
-                retries,
-                message: message + &note,
-            },
-            Self::Other(message) => Self::Other(message + &note),
-            other => Self::Other(format!("{other}{note}")),
+impl TransportError {
+    /// An error with a message only.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            source: None,
+            retryable: false,
         }
     }
 
-    /// The refusal text when the model declined to answer: an OpenAI
-    /// `refusal`, an Anthropic `stop_reason: refusal`, or a Gemini safety
-    /// block. Refusals are not retried.
-    ///
-    /// The error itself is an [`Error::Other`] so that matching on `Error`
-    /// keeps compiling; use this method to tell refusals apart.
-    pub fn refusal(&self) -> Option<&str> {
+    /// Wrap another error.
+    pub fn from_source(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            message: source.to_string(),
+            source: Some(Box::new(source)),
+            retryable: false,
+        }
+    }
+
+    /// Mark the error as worth retrying (a refused or reset connection).
+    pub fn retryable(mut self) -> Self {
+        self.retryable = true;
+        self
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+}
+
+impl fmt::Display for TransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TransportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|e| e as _)
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Other(m) => m
-                .strip_prefix(REFUSED)
-                .and_then(|rest| rest.split_once("): "))
-                .map(|(_, text)| text),
+            Self::Transport {
+                provider, source, ..
+            } => write!(f, "{provider}: transport error: {source}"),
+            Self::Api {
+                provider,
+                status,
+                message,
+                ..
+            } => write!(f, "{provider}: api error ({status}): {message}"),
+            Self::Refusal { provider, text, .. } => write!(f, "{provider}: model refused: {text}"),
+            Self::Truncated {
+                provider, reason, ..
+            } => write!(
+                f,
+                "{provider}: output truncated ({reason}): the answer hit the output token \
+                 limit; raise max_tokens, lower the reasoning effort, or accept_truncated()"
+            ),
+            Self::Parse {
+                provider,
+                attempts,
+                message,
+                ..
+            } => write!(
+                f,
+                "{provider}: answer did not parse after {attempts} attempt(s): {message}"
+            ),
+            Self::Validation {
+                provider,
+                attempts,
+                message,
+                ..
+            } => write!(
+                f,
+                "{provider}: validation failed after {attempts} attempt(s): {message}"
+            ),
+            Self::Unsupported { provider, what } => write!(f, "{provider}: unsupported: {what}"),
+            Self::Timeout { after, .. } => write!(f, "timed out after {after:?}"),
+            Self::NoTransport => f.write_str(
+                "no transport: enable the `reqwest` feature or call Client::with_transport",
+            ),
+            Self::Fallback {
+                provider, error, ..
+            } => write!(f, "all providers failed; last ({provider}): {error}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Transport { source, .. } => Some(source),
+            Self::Fallback { previous, .. } => Some(previous.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl Error {
+    /// What the failed extraction cost, summed over every request it sent,
+    /// fallbacks included.
+    pub fn usage(&self) -> Option<&Usage> {
+        match self {
+            Self::Transport { usage, .. }
+            | Self::Api { usage, .. }
+            | Self::Refusal { usage, .. }
+            | Self::Truncated { usage, .. }
+            | Self::Parse { usage, .. }
+            | Self::Validation { usage, .. }
+            | Self::Timeout { usage, .. } => Some(usage),
+            Self::Fallback { error, .. } => error.usage(),
+            Self::Unsupported { .. } | Self::NoTransport => None,
+        }
+    }
+
+    /// The provider that produced the error.
+    pub fn provider(&self) -> Option<&'static str> {
+        match self {
+            Self::Transport { provider, .. }
+            | Self::Api { provider, .. }
+            | Self::Refusal { provider, .. }
+            | Self::Truncated { provider, .. }
+            | Self::Parse { provider, .. }
+            | Self::Validation { provider, .. }
+            | Self::Unsupported { provider, .. }
+            | Self::Fallback { provider, .. } => Some(provider),
+            Self::Timeout { .. } | Self::NoTransport => None,
+        }
+    }
+
+    /// Each provider's error, the last provider tried first.
+    pub fn chain(&self) -> impl Iterator<Item = &Error> {
+        let mut next = Some(self);
+        std::iter::from_fn(move || {
+            let cur = next?;
+            match cur {
+                Self::Fallback {
+                    error, previous, ..
+                } => {
+                    next = Some(previous.as_ref());
+                    Some(error.as_ref())
+                }
+                other => {
+                    next = None;
+                    Some(other)
+                }
+            }
+        })
+    }
+
+    /// The refusal text when the model declined to answer.
+    pub fn refusal(&self) -> Option<&str> {
+        match self.chain().next()? {
+            Self::Refusal { text, .. } => Some(text),
             _ => None,
         }
     }
 
-    /// True when the answer was cut off by the output token limit (OpenAI
-    /// `finish_reason: length`, Anthropic `stop_reason: max_tokens`, Gemini
-    /// `finishReason: MAX_TOKENS`) and did not parse. Not retried, since the
-    /// same limit would cut the next answer too.
+    /// True when the answer was cut off by the output token limit.
     pub fn is_truncated(&self) -> bool {
-        matches!(self, Self::Other(m) if m.starts_with(TRUNCATED))
+        matches!(self.chain().next(), Some(Self::Truncated { .. }))
+    }
+
+    pub(crate) fn usage_mut(&mut self) -> Option<&mut Usage> {
+        match self {
+            Self::Transport { usage, .. }
+            | Self::Api { usage, .. }
+            | Self::Refusal { usage, .. }
+            | Self::Truncated { usage, .. }
+            | Self::Parse { usage, .. }
+            | Self::Validation { usage, .. }
+            | Self::Timeout { usage, .. } => Some(usage),
+            Self::Fallback { error, .. } => error.usage_mut(),
+            Self::Unsupported { .. } | Self::NoTransport => None,
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn display_api_error() {
-        let err = Error::Api {
-            status: 429,
-            message: "rate limited".into(),
-        };
-        let s = err.to_string();
-        assert!(s.contains("429"));
-        assert!(s.contains("rate limited"));
-    }
-
-    #[test]
-    fn display_extraction_failed() {
-        let err = Error::ExtractionFailed {
-            retries: 3,
-            message: "invalid json".into(),
-        };
-        let s = err.to_string();
-        assert!(s.contains("3 retries"));
-        assert!(s.contains("invalid json"));
-    }
-
-    #[test]
-    fn display_validation_failed() {
-        let err = Error::ValidationFailed {
-            retries: 2,
-            message: "age too high".into(),
-        };
-        let s = err.to_string();
-        assert!(s.contains("2 retries"));
-        assert!(s.contains("age too high"));
-    }
-
-    #[test]
-    fn display_other() {
-        let err = Error::Other("something went wrong".into());
-        assert_eq!(err.to_string(), "something went wrong");
-    }
-
-    #[test]
-    fn refusal_and_truncation_are_recognizable() {
-        let r = Error::refused("openai", "I can't help with that.");
-        assert_eq!(r.refusal(), Some("I can't help with that."));
-        assert!(!r.is_truncated());
-        assert!(r.to_string().contains("openai"));
-
-        let t = Error::truncated("gemini", "finishReason: MAX_TOKENS");
-        assert!(t.is_truncated());
-        assert_eq!(t.refusal(), None);
-        assert!(t.to_string().contains("MAX_TOKENS"));
-
-        assert_eq!(Error::Other("x".into()).refusal(), None);
-
-        let r = Error::refused("openai", "no").with_fallback_failures("gemini (m): boom");
-        assert_eq!(r.refusal(), Some("no [fallbacks failed: gemini (m): boom]"));
-        assert!(!Error::Timeout(Duration::from_secs(1)).is_truncated());
-    }
-
-    #[test]
-    fn json_error_conversion() {
-        let json_err = serde_json::from_str::<String>("invalid").unwrap_err();
-        let err: Error = json_err.into();
-        assert!(matches!(err, Error::Json(_)));
-    }
-
-    #[test]
-    fn display_timeout() {
-        let err = Error::Timeout(Duration::from_secs(60));
-        let s = err.to_string();
-        assert!(s.contains("timed out"));
-        assert!(s.contains("60"));
-    }
-
-    #[test]
-    fn error_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<Error>();
-    }
-
-    #[test]
-    fn debug_format() {
-        let err = Error::Api {
-            status: 500,
-            message: "internal".into(),
-        };
-        let debug = format!("{err:?}");
-        assert!(debug.contains("Api"));
-        assert!(debug.contains("500"));
-    }
-}
+mod tests;
