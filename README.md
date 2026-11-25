@@ -217,6 +217,16 @@ Cost comes from the [tiktoken](https://crates.io/crates/tiktoken) price table (f
 instructors = { version = "1", default-features = false } # no cost tracking
 ```
 
+## Field order
+
+By default the schema lists a struct's fields in alphabetical order, because schemars stores properties in a `serde_json::Map`, which is sorted unless `serde_json/preserve_order` is enabled. OpenAI generates fields in the order the schema lists them, so a `reasoning` field declared before `answer` is written after it. The `preserve-order` feature keeps declaration order for every provider:
+
+```toml
+instructors = { version = "1", features = ["preserve-order"] }
+```
+
+It turns on `serde_json/preserve_order`, which applies to every crate in your build that uses `serde_json::Map`: their maps keep insertion order instead of sorting, and `indexmap` is added to the build.
+
 ## Performance
 
 Measured on 2026-11-25 on an Apple M4 Pro Mac mini (14 cores) holding an exclusive benchmark lock, release build with LTO and one codegen unit, rustc 1.100.0. The 1-minute load average, sampled every 15 s, stayed between 1.6 and 4.8 for the whole run, builds included. Each figure is the median of 5 to 7 rounds. The 1.4.1 and 1.5 builds were run one after the other, twice; the tables show the first pass, and the second pass agreed within 1.2 µs on the overhead column and within 4 % elsewhere. Payload: an `Invoice` with two nested addresses, an enum, eight line items with optional fields, CJK text and escaped quotes, 1,247 bytes of JSON. Everything runs against a loopback HTTP server; no API is called. The benchmark program is not in this repository.

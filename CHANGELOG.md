@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Feature `preserve-order`: schema properties are sent in declaration order
+  instead of alphabetical order, for every provider. OpenAI generates fields in
+  schema order, so a `reasoning` field declared before `answer` is now written
+  first. The feature turns on `serde_json/preserve_order`, which affects every
+  crate in the build that uses `serde_json::Map`. Without it nothing changes.
+
 ## [1.5.0] - 2026-11-25
 
 ### Upgrading from 1.4

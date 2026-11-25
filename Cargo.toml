@@ -30,6 +30,9 @@ jsonrepair = "0.1"
 default = ["cost-tracking"]
 cost-tracking = ["tiktoken"]
 tracing = ["dep:tracing"]
+# schema properties in declaration order; turns on `serde_json/preserve_order`
+# for every crate in the build
+preserve-order = ["schemars/preserve_order"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

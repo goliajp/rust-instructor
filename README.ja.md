@@ -217,6 +217,16 @@ println!("入力 {}、出力 {}、{:?} USD", r.usage.input_tokens, r.usage.outpu
 instructors = { version = "1", default-features = false } # 費用計算なし
 ```
 
+## フィールドの順序
+
+デフォルトでは、スキーマ内の構造体のフィールドはアルファベット順に並びます。schemars がプロパティを `serde_json::Map` に入れており、この型は `serde_json/preserve_order` が有効でない限りキーをソートするためです。OpenAI はスキーマに並んだ順にフィールドを生成するので、`answer` より前に宣言した `reasoning` が後から書かれます。`preserve-order` feature を有効にすると、どのプロバイダーにも宣言順で送ります。
+
+```toml
+instructors = { version = "1", features = ["preserve-order"] }
+```
+
+この feature は `serde_json/preserve_order` を有効にします。ビルド内で `serde_json::Map` を使うすべてのクレートに影響し、マップのキーはソートされず挿入順になります。また `indexmap` がビルドに加わります。
+
 ## 性能
 
 2026 年 11 月 25 日、Apple M4 Pro の Mac mini（14 コア）で、ベンチマーク用のロックを専有して計測しました。release ビルド、LTO 有効、codegen-units は 1、rustc 1.100.0 です。15 秒ごとに記録した 1 分間のロードアベレージは、ビルドを含む全期間で 1.6 から 4.8 の間でした。各数値は 5〜7 ラウンドの中央値です。1.4.1 と 1.5 のビルドを交互に 2 回ずつ走らせ、表には 1 回目の結果を載せています。2 回目との差は「基準からの増分」の列で 1.2 µs 以内、それ以外で 4% 以内でした。データは `Invoice` で、ネストした住所 2 つ、列挙型 1 つ、省略可能なフィールドを持つ明細 8 行を含み、日中の文字とエスケープされた引用符が入った 1,247 バイトの JSON です。リクエストはすべてローカルのループバック HTTP サーバーに送り、実際の API は呼んでいません。ベンチマークのプログラムはこのリポジトリには含まれていません。

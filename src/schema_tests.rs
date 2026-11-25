@@ -214,3 +214,68 @@ fn name_is_sanitized() {
     assert_eq!(sanitize_name(""), "output");
     assert_eq!(sanitize_name(&"x".repeat(80)).len(), 64);
 }
+
+#[derive(JsonSchema)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
+struct Ordered {
+    zeta_reason: String,
+    alpha_answer: String,
+    mid_inner: OrderedInner,
+}
+
+#[derive(JsonSchema)]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
+struct OrderedInner {
+    yy_first: Option<u32>,
+    bb_second: bool,
+}
+
+fn positions(raw: &str, keys: &[&str]) -> Vec<usize> {
+    keys.iter()
+        .map(|k| {
+            raw.find(&format!("\"{k}\":"))
+                .unwrap_or_else(|| panic!("{k} missing in {raw}"))
+        })
+        .collect()
+}
+
+fn is_sorted(p: &[usize]) -> bool {
+    p.windows(2).all(|w| w[0] < w[1])
+}
+
+const ALL: [Dialect; DIALECTS] = [
+    Dialect::OpenAi,
+    Dialect::AnthropicOutput,
+    Dialect::AnthropicTool,
+    Dialect::Gemini,
+    Dialect::GeminiJson,
+];
+
+#[cfg(feature = "preserve-order")]
+#[test]
+fn properties_follow_declaration_order() {
+    for d in ALL {
+        for list in [false, true] {
+            let raw = entry_for::<Ordered>(list).get(d).get().to_string();
+            let top = positions(&raw, &["zeta_reason", "alpha_answer", "mid_inner"]);
+            assert!(is_sorted(&top), "{d:?} list={list}: {raw}");
+            let inner = positions(&raw, &["yy_first", "bb_second"]);
+            assert!(is_sorted(&inner), "{d:?} list={list}: {raw}");
+        }
+    }
+    let s = json::<Ordered>(false, Dialect::OpenAi)["json_schema"]["schema"].clone();
+    assert_eq!(
+        s["required"],
+        serde_json::json!(["zeta_reason", "alpha_answer", "mid_inner"])
+    );
+}
+
+#[cfg(not(feature = "preserve-order"))]
+#[test]
+fn properties_are_alphabetical_without_preserve_order() {
+    for d in ALL {
+        let raw = entry_for::<Ordered>(false).get(d).get().to_string();
+        let top = positions(&raw, &["alpha_answer", "mid_inner", "zeta_reason"]);
+        assert!(is_sorted(&top), "{d:?}: {raw}");
+    }
+}

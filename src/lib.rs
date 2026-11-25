@@ -75,6 +75,8 @@
 //!   response hooks, image input
 //! - token counts and cost estimates through `tiktoken` (feature
 //!   `cost-tracking`, on by default); `tracing` spans (feature `tracing`)
+//! - schema properties in declaration order instead of alphabetical (feature
+//!   `preserve-order`, which turns on `serde_json/preserve_order`)
 
 mod backoff;
 mod batch;

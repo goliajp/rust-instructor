@@ -217,6 +217,16 @@ println!("输入 {}，输出 {}，{:?} 美元", r.usage.input_tokens, r.usage.ou
 instructors = { version = "1", default-features = false } # 不计算费用
 ```
 
+## 字段顺序
+
+默认情况下，schema 里结构体的字段按字母顺序排列：schemars 把属性放在 `serde_json::Map` 里，而这个类型在没有开启 `serde_json/preserve_order` 时会对键排序。OpenAI 按 schema 里的顺序生成字段，所以声明在 `answer` 前面的 `reasoning` 会在它后面生成。开启 `preserve-order` feature 后，发给所有服务商的 schema 都按声明顺序排列：
+
+```toml
+instructors = { version = "1", features = ["preserve-order"] }
+```
+
+这个 feature 会开启 `serde_json/preserve_order`，影响你的构建里所有用到 `serde_json::Map` 的 crate：它们的 map 不再排序，而是保持插入顺序；构建里还会多出 `indexmap`。
+
 ## 性能
 
 2026 年 11 月 25 日在 Apple M4 Pro Mac mini（14 核）上测量，测量期间独占基准测试锁；release 构建，开启 LTO，codegen-units 为 1，rustc 1.100.0。每 15 秒采样一次的 1 分钟平均负载在整个过程中（包括编译）介于 1.6 和 4.8 之间。每个数字是 5 到 7 轮的中位数。1.4.1 和 1.5 两个构建交替各跑了两遍；表中是第一遍的结果，第二遍和第一遍相比，「比基线多出」一列相差不超过 1.2 µs，其他数字相差不超过 4%。测试数据是一张 `Invoice`：两个嵌套地址、一个枚举、8 个带可选字段的明细行，含中日文字符和转义引号，JSON 共 1,247 字节。所有请求都发给本机回环的 HTTP 服务，不调用任何真实接口。基准测试程序不在本仓库里。

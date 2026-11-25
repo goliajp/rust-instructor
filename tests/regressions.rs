@@ -318,3 +318,51 @@ async fn anthropic_structured_output_strips_unsupported_keywords() {
         "{qty}"
     );
 }
+
+#[cfg(feature = "preserve-order")]
+#[expect(dead_code, reason = "fields are only filled by deserialization")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Reasoned {
+    reasoning: String,
+    answer: String,
+    confidence: f64,
+}
+
+#[cfg(feature = "preserve-order")]
+#[tokio::test]
+async fn schema_properties_keep_declaration_order() {
+    const R: &str = r#"{"reasoning":"r","answer":"a","confidence":1}"#;
+    let (base, log) = start(vec![
+        Reply::json("/chat", 200, openai_ok(R)),
+        Reply::json("/messages", 200, anthropic_text(R)),
+        Reply::json(":generate", 200, gemini_ok(R)),
+    ])
+    .await;
+    Client::openai_compatible("k", base.clone())
+        .extract::<Reasoned>("x")
+        .await
+        .unwrap();
+    Client::anthropic_compatible("k", base.clone())
+        .with_anthropic_structured_output()
+        .extract::<Reasoned>("x")
+        .await
+        .unwrap();
+    Client::gemini_compatible("k", base)
+        .extract::<Reasoned>("x")
+        .await
+        .unwrap();
+    let schemas = [
+        log.body(0)["response_format"]["json_schema"]["schema"].clone(),
+        log.body(1)["output_config"]["format"]["schema"].clone(),
+        log.body(2)["generationConfig"]["responseSchema"].clone(),
+    ];
+    for s in schemas {
+        let keys: Vec<&str> = s["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["reasoning", "answer", "confidence"], "{s}");
+    }
+}
