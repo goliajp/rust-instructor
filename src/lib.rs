@@ -82,6 +82,7 @@ mod backoff;
 mod batch;
 mod client;
 mod error;
+mod json;
 mod extract;
 pub mod partial;
 mod provider;
