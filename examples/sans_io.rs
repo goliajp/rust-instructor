@@ -7,7 +7,7 @@
 
 use instructors::prelude::*;
 
-#[derive(Debug, Deserialize, Schema)]
+#[derive(Deserialize, Schema)]
 struct Contact {
     /// Full name as written.
     name: String,
@@ -37,7 +37,12 @@ fn main() {
         }
     };
     match result {
-        Ok(out) => println!("{:?}, {} tokens", out.value, out.usage.total_tokens()),
+        Ok(out) => println!(
+            "{} <{}>, {} tokens",
+            out.value.name,
+            out.value.email.as_deref().unwrap_or("-"),
+            out.usage.total_tokens()
+        ),
         Err(e) => eprintln!("{e}"),
     }
 }
