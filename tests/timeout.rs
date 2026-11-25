@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use instructors::{BackoffConfig, Client, Error};
-use schemars::JsonSchema;
+use instructors::{Client, Error};
+use instructors::{RetryPolicy, Schema};
 use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
@@ -50,7 +50,7 @@ async fn timeout_triggers() {
     let client =
         Client::openai_compatible("key", server.uri()).with_timeout(Duration::from_millis(100));
     let err = client.extract::<Contact>("test").await.unwrap_err();
-    assert!(matches!(err, Error::Timeout(_)));
+    assert!(matches!(err, Error::Timeout { .. }));
 }
 
 #[tokio::test]
@@ -92,12 +92,12 @@ async fn timeout_covers_retries() {
         Client::openai_compatible("key", server.uri()).with_timeout(Duration::from_millis(100));
     let err = client
         .extract::<Contact>("test")
-        .max_retries(10)
+        .max_attempts(11)
         .await
         .unwrap_err();
 
     // should time out before exhausting 10 retries
-    assert!(matches!(err, Error::Timeout(_)));
+    assert!(matches!(err, Error::Timeout { .. }));
 }
 
 #[tokio::test]
@@ -112,21 +112,24 @@ async fn timeout_covers_backoff() {
         .await;
 
     let client = Client::openai_compatible("key", server.uri())
-        .with_retry_backoff(BackoffConfig {
-            base_delay: Duration::from_millis(200),
-            max_http_retries: 10,
-            jitter: false,
-            ..Default::default()
-        })
+        .with_retry(
+            RetryPolicy::new()
+                .base_delay(Duration::from_millis(200))
+                .max_retries(10)
+                .jitter(false),
+        )
         .with_timeout(Duration::from_millis(100));
 
     let err = client.extract::<Contact>("test").await.unwrap_err();
-    assert!(matches!(err, Error::Timeout(_)));
+    assert!(matches!(err, Error::Timeout { .. }));
 }
 
 #[tokio::test]
 async fn timeout_error_display() {
-    let err = Error::Timeout(Duration::from_secs(60));
+    let err = Error::Timeout {
+        after: Duration::from_secs(60),
+        usage: Box::default(),
+    };
     let s = err.to_string();
     assert!(s.contains("timed out"));
     assert!(s.contains("60"));
@@ -154,5 +157,5 @@ async fn per_request_timeout_override() {
         .timeout(Duration::from_millis(50))
         .await
         .unwrap_err();
-    assert!(matches!(err, Error::Timeout(_)));
+    assert!(matches!(err, Error::Timeout { .. }));
 }

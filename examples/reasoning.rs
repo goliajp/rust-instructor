@@ -7,7 +7,7 @@
 use instructors::prelude::*;
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Invoice {
     vendor: String,
     total: f64,
@@ -15,7 +15,7 @@ struct Invoice {
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("GEMINI_API_KEY").expect("set GEMINI_API_KEY");
 
     // copying fields out of a document needs little reasoning

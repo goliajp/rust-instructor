@@ -7,7 +7,7 @@
 
 use instructors::prelude::*;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct UserProfile {
     name: String,
     age: u32,
@@ -30,7 +30,7 @@ impl Validate for UserProfile {
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let client = Client::openai(&api_key).with_model("gpt-5.6-luna");
 
@@ -41,7 +41,7 @@ async fn main() -> instructors::Result<()> {
         .await?;
 
     println!("User: {:#?}", user.value);
-    println!("Retries: {}", user.usage.retries);
+    println!("Retries: {}", user.usage.retries());
 
     // closure-based validation
     let user = client

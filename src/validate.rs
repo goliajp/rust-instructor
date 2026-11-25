@@ -1,7 +1,20 @@
 /// Validation error with a human-readable message that gets fed back to the LLM on retry.
 #[derive(Debug, Clone)]
 pub struct ValidationError {
-    pub message: String,
+    message: String,
+}
+
+impl ValidationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// The text sent back to the model.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl std::fmt::Display for ValidationError {
@@ -35,10 +48,9 @@ impl From<&str> for ValidationError {
 ///
 /// ```rust
 /// use instructors::{Validate, ValidationError};
-/// use serde::Deserialize;
-/// use schemars::JsonSchema;
+/// use instructors::{Deserialize, Schema};
 ///
-/// #[derive(Debug, Deserialize, JsonSchema)]
+/// #[derive(Debug, Deserialize, Schema)]
 /// struct User {
 ///     name: String,
 ///     age: u32,
@@ -92,20 +104,20 @@ mod tests {
     #[test]
     fn invalid_fails() {
         let err = InvalidUser.validate().unwrap_err();
-        assert_eq!(err.message, "always fails");
+        assert_eq!(err.message(), "always fails");
         assert_eq!(err.to_string(), "always fails");
     }
 
     #[test]
     fn error_from_string() {
         let err = ValidationError::from("test".to_string());
-        assert_eq!(err.message, "test");
+        assert_eq!(err.message(), "test");
     }
 
     #[test]
     fn error_from_str() {
         let err = ValidationError::from("test");
-        assert_eq!(err.message, "test");
+        assert_eq!(err.message(), "test");
     }
 
     #[test]

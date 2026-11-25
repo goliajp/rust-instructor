@@ -13,14 +13,14 @@ use instructors::prelude::*;
     dead_code,
     reason = "fields are only filled by deserialization and shown through Debug"
 )]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let openai_key = std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY");
     let anthropic_key = std::env::var("ANTHROPIC_API_KEY").expect("set ANTHROPIC_API_KEY");
 

@@ -122,29 +122,68 @@ impl<'a> PartialValue<'a> {
             .map(move |(k, idx)| (k.as_str(), PartialValue { p, idx: *idx }))
     }
 
-    /// Copy into a `serde_json::Value`. A number whose text is not yet a
-    /// valid number becomes `null`. This walks the whole subtree.
-    pub fn to_value(&self) -> serde_json::Value {
-        use serde_json::Value;
+    /// The value so far as JSON text. A number whose text is not yet a
+    /// valid number is written as `null`. This walks the whole subtree.
+    pub fn to_json(&self) -> String {
+        let mut out = Vec::new();
+        self.write_json(&mut out);
+        String::from_utf8(out).expect("the writer emits utf-8")
+    }
+
+    pub(crate) fn write_json(&self, out: &mut Vec<u8>) {
         match &self.node().kind {
-            NodeKind::Null => Value::Null,
-            NodeKind::Bool(b) => Value::Bool(*b),
-            NodeKind::Number(n) => serde_json::from_str::<serde_json::Number>(n)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-            NodeKind::String(s) => Value::String(s.clone()),
-            NodeKind::Array(_) => Value::Array(self.items().map(|v| v.to_value()).collect()),
-            NodeKind::Object(_) => Value::Object(
-                self.entries()
-                    .map(|(k, v)| (k.to_string(), v.to_value()))
-                    .collect(),
-            ),
+            NodeKind::Null => out.extend_from_slice(b"null"),
+            NodeKind::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
+            NodeKind::Number(n) => {
+                if crate::json::from_str::<f64>(n).is_ok() {
+                    out.extend_from_slice(n.as_bytes());
+                } else {
+                    out.extend_from_slice(b"null");
+                }
+            }
+            NodeKind::String(s) => crate::json::write_str(out, s),
+            NodeKind::Array(_) => {
+                out.push(b'[');
+                for (i, v) in self.items().enumerate() {
+                    if i > 0 {
+                        out.push(b',');
+                    }
+                    v.write_json(out);
+                }
+                out.push(b']');
+            }
+            NodeKind::Object(_) => {
+                out.push(b'{');
+                for (i, (k, v)) in self.entries().enumerate() {
+                    if i > 0 {
+                        out.push(b',');
+                    }
+                    crate::json::write_str(out, k);
+                    out.push(b':');
+                    v.write_json(out);
+                }
+                out.push(b'}');
+            }
         }
+    }
+
+    /// Deserialize the value so far into `T`, typically a type whose fields
+    /// are all `Option`. `None` when it does not fit `T` yet.
+    pub fn parse<T: serde::de::DeserializeOwned>(&self) -> Option<T> {
+        let mut out = Vec::new();
+        self.write_json(&mut out);
+        crate::json::from_slice(&out).ok()
+    }
+
+    /// Copy into a `serde_json::Value` (feature `serde_json`).
+    #[cfg(feature = "serde_json")]
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::from_str(&self.to_json()).unwrap_or(serde_json::Value::Null)
     }
 }
 
 impl fmt::Debug for PartialValue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_value())
+        f.write_str(&self.to_json())
     }
 }

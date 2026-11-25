@@ -1,422 +1,297 @@
-use std::future::{Future, IntoFuture};
-use std::marker::PhantomData;
-use std::pin::Pin;
+use std::future::IntoFuture;
+use std::sync::Arc;
 use std::time::Duration;
 
-use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
-use crate::backoff::BackoffConfig;
-use crate::client::{Client, ExtractResult};
+use crate::client::Client;
+use crate::drive::{self, Transports};
 use crate::error::Result;
+use crate::exchange::{Exchange, Extracted, Hooks, RetryPolicy, Spec, Target, Validator};
+use crate::message::{Message, Part};
 use crate::partial::PartialValue;
-use crate::provider::{ImageInput, Message};
 use crate::reasoning::Reasoning;
+use crate::schema::SchemaEntry;
+use crate::transport::BoxFuture;
 use crate::usage::Usage;
 use crate::validate::{Validate, ValidationError};
+use crate::wire::{HttpRequest, OutputMode};
 
-pub(crate) type ValidatorFn<T> =
-    Box<dyn Fn(&T) -> std::result::Result<(), ValidationError> + Send + Sync>;
-type RequestHook = Box<dyn Fn(&str, &str) + Send + Sync>;
-type ResponseHook = Box<dyn Fn(&Usage) + Send + Sync>;
-type StreamHook = Box<dyn Fn(&str) + Send + Sync>;
-type PartialHook = Box<dyn Fn(PartialValue<'_>) + Send + Sync>;
-
-/// Builder for configuring an extraction request.
-///
-/// Created by [`Client::extract`]. Call `.await` to execute the request.
-pub struct ExtractBuilder<'a, T> {
-    pub(crate) client: &'a Client,
-    pub(crate) prompt: String,
-    pub(crate) model: Option<String>,
-    pub(crate) system: Option<String>,
-    pub(crate) temperature: Option<f64>,
-    pub(crate) max_tokens: Option<u32>,
-    pub(crate) max_retries: u32,
-    pub(crate) backoff: Option<BackoffConfig>,
-    pub(crate) timeout: Duration,
-    pub(crate) reasoning: Option<Reasoning>,
-    pub(crate) context: Option<String>,
-    pub(crate) images: Vec<ImageInput>,
-    pub(crate) history: Option<Vec<Message>>,
-    pub(crate) validator: Option<ValidatorFn<T>>,
-    pub(crate) on_request: Option<RequestHook>,
-    pub(crate) on_response: Option<ResponseHook>,
-    pub(crate) on_stream: Option<StreamHook>,
-    pub(crate) on_partial: Option<PartialHook>,
-    // `extract_many`: the schema root is `{"items": T}`
-    pub(crate) list: bool,
-    _phantom: PhantomData<T>,
+/// One extraction, configured per request. `.await` it, or take the
+/// sans-IO [`Exchange`] with [`exchange`](Self::exchange).
+#[must_use = "an extraction does nothing until it is awaited"]
+pub struct Extract<'a, T> {
+    client: &'a Client,
+    prompt: String,
+    parts: Vec<Part>,
+    context: Option<String>,
+    history: Vec<Message>,
+    model: Option<String>,
+    system: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    reasoning: Option<Reasoning>,
+    mode: Option<OutputMode>,
+    retry: RetryPolicy,
+    max_attempts: u32,
+    timeout: Duration,
+    accept_truncated: bool,
+    validator: Option<Validator<T>>,
+    hooks: Hooks,
+    schema: &'static SchemaEntry,
+    list: bool,
 }
 
-impl<'a, T> ExtractBuilder<'a, T> {
-    pub(crate) fn new(client: &'a Client, prompt: String, list: bool) -> Self {
+impl<'a, T: DeserializeOwned> Extract<'a, T> {
+    pub(crate) fn new(
+        client: &'a Client,
+        prompt: String,
+        schema: &'static SchemaEntry,
+        list: bool,
+    ) -> Self {
+        let c = &client.inner;
         Self {
             client,
             prompt,
-            model: client.default_model.clone(),
-            system: client.default_system.clone(),
-            temperature: client.default_temperature,
-            max_tokens: client.default_max_tokens,
-            max_retries: client.default_max_retries,
-            backoff: client.default_backoff.clone(),
-            timeout: client.default_timeout,
-            reasoning: client.default_reasoning,
+            parts: Vec::new(),
             context: None,
-            images: Vec::new(),
-            history: None,
+            history: Vec::new(),
+            model: c.model.clone(),
+            system: c.system.clone(),
+            temperature: c.temperature,
+            max_tokens: c.max_tokens,
+            reasoning: c.reasoning,
+            mode: None,
+            retry: c.retry.clone(),
+            max_attempts: c.max_attempts,
+            timeout: c.timeout,
+            accept_truncated: false,
             validator: None,
-            on_request: None,
-            on_response: None,
-            on_stream: None,
-            on_partial: None,
+            hooks: Hooks::default(),
+            schema,
             list,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<T> ExtractBuilder<'_, T>
-where
-    T: DeserializeOwned + JsonSchema,
-{
-    /// Override the model for this request. Fallback clients keep their own.
-    pub fn model(self, model: impl Into<String>) -> Self {
-        Self {
-            model: Some(model.into()),
-            ..self
         }
     }
 
-    /// Override the system prompt for this request.
-    pub fn system(self, system: impl Into<String>) -> Self {
-        Self {
-            system: Some(system.into()),
-            ..self
-        }
-    }
-
-    /// Set the temperature (0.0 = deterministic, 1.0 = creative).
-    ///
-    /// Not sent to Anthropic: the current Claude generations reject a
-    /// non-default `temperature` with a 400.
-    pub fn temperature(self, temp: f64) -> Self {
-        Self {
-            temperature: Some(temp),
-            ..self
-        }
-    }
-
-    /// Set the maximum output tokens. See [`Client::with_max_tokens`] for
-    /// the field each provider receives.
-    pub fn max_tokens(self, tokens: u32) -> Self {
-        Self {
-            max_tokens: Some(tokens),
-            ..self
-        }
-    }
-
-    /// Set the maximum retry attempts on parse/validation failure.
-    pub fn max_retries(self, retries: u32) -> Self {
-        Self {
-            max_retries: retries,
-            ..self
-        }
-    }
-
-    /// Set the reasoning level for this request. See [`Reasoning`].
-    pub fn reasoning(self, reasoning: Reasoning) -> Self {
-        Self {
-            reasoning: Some(reasoning),
-            ..self
-        }
-    }
-
-    /// Enable exponential backoff for retryable HTTP errors.
-    pub fn retry_backoff(self, config: BackoffConfig) -> Self {
-        Self {
-            backoff: Some(config),
-            ..self
-        }
-    }
-
-    /// Set the overall request timeout for this extraction.
-    ///
-    /// Covers the entire extraction including all retries, backoff, and fallback.
-    pub fn timeout(self, timeout: Duration) -> Self {
-        Self { timeout, ..self }
-    }
-
-    /// Add extra context to the prompt.
-    pub fn context(self, ctx: impl Into<String>) -> Self {
-        Self {
-            context: Some(ctx.into()),
-            ..self
-        }
-    }
-
-    /// Add an image to the extraction prompt (for vision-capable models).
-    ///
-    /// Can be called multiple times to add multiple images.
-    pub fn image(mut self, img: ImageInput) -> Self {
-        self.images.push(img);
+    /// The model for this request. Fallback clients keep their own.
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
         self
     }
 
-    /// Add multiple images to the extraction prompt.
-    pub fn images(mut self, imgs: Vec<ImageInput>) -> Self {
-        self.images.extend(imgs);
+    pub fn system(mut self, system: impl Into<String>) -> Self {
+        self.system = Some(system.into());
         self
     }
 
-    /// Set prior message history for multi-turn conversations.
-    ///
-    /// Messages are prepended before the extraction prompt.
-    ///
-    /// ```rust,no_run
-    /// # use serde::Deserialize;
-    /// # use schemars::JsonSchema;
-    /// use instructors::Message;
-    ///
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct Summary { text: String }
-    ///
-    /// # async fn run() -> instructors::Result<()> {
-    /// let client = instructors::Client::openai("sk-...");
-    /// let result = client.extract::<Summary>("summarize the above")
-    ///     .messages(vec![
-    ///         Message::user("Here is a long document..."),
-    ///         Message::assistant("I see the document."),
-    ///     ])
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn messages(self, msgs: Vec<Message>) -> Self {
-        Self {
-            history: Some(msgs),
-            ..self
-        }
+    pub fn temperature(mut self, t: f64) -> Self {
+        self.temperature = Some(t);
+        self
     }
 
-    /// Register a hook called before each API request.
-    ///
-    /// Receives `(model, prompt)`.
-    pub fn on_request<F>(self, f: F) -> Self
-    where
-        F: Fn(&str, &str) + Send + Sync + 'static,
-    {
-        Self {
-            on_request: Some(Box::new(f)),
-            ..self
-        }
+    /// See [`Client::with_max_tokens`].
+    pub fn max_tokens(mut self, n: u32) -> Self {
+        self.max_tokens = Some(n);
+        self
     }
 
-    /// Register a hook called after a successful extraction.
-    ///
-    /// Receives the final `Usage`.
-    pub fn on_response<F>(self, f: F) -> Self
-    where
-        F: Fn(&Usage) + Send + Sync + 'static,
-    {
-        Self {
-            on_response: Some(Box::new(f)),
-            ..self
-        }
+    /// See [`Reasoning`].
+    pub fn reasoning(mut self, r: Reasoning) -> Self {
+        self.reasoning = Some(r);
+        self
     }
 
-    /// Stream the response and call `f` with each raw text delta.
-    ///
-    /// The final result is still a complete `ExtractResult<T>` parsed from
-    /// the whole response.
-    pub fn on_stream<F>(self, f: F) -> Self
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        Self {
-            on_stream: Some(Box::new(f)),
-            ..self
-        }
+    /// The output mode for this request's first provider.
+    pub fn output_mode(mut self, mode: OutputMode) -> Self {
+        self.mode = Some(mode);
+        self
     }
 
-    /// Stream the response and call `f` after each delta with the JSON
-    /// parsed so far.
-    ///
-    /// The value is a borrowed view of an incremental parser that reads each
-    /// byte once, so the cost of the whole stream grows linearly with its
-    /// length. For [`Client::extract_many`] the view is the list itself.
-    /// A retry starts a new value.
-    ///
-    /// ```rust,no_run
-    /// # use serde::Deserialize;
-    /// # use schemars::JsonSchema;
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct Article { title: String, body: String }
-    ///
-    /// # async fn run() -> instructors::Result<()> {
-    /// let client = instructors::Client::openai("sk-...");
-    /// let article: Article = client
-    ///     .extract("...")
-    ///     .on_partial(|v| {
-    ///         if let Some(title) = v.get("title").and_then(|t| t.as_str()) {
-    ///             println!("title so far: {title}");
-    ///         }
-    ///     })
-    ///     .await?
-    ///     .value;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn on_partial<F>(self, f: F) -> Self
-    where
-        F: Fn(PartialValue<'_>) + Send + Sync + 'static,
-    {
-        Self {
-            on_partial: Some(Box::new(f)),
-            ..self
-        }
+    pub fn retry(mut self, p: RetryPolicy) -> Self {
+        self.retry = p;
+        self
     }
 
-    /// Add a custom validation function. If validation fails, the error message
-    /// is fed back to the LLM and the request is retried.
-    ///
-    /// ```rust,no_run
-    /// # use serde::Deserialize;
-    /// # use schemars::JsonSchema;
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct User { name: String, age: u32 }
-    ///
-    /// # async fn run() -> instructors::Result<()> {
-    /// let client = instructors::Client::openai("sk-...");
-    /// let user: User = client.extract("...")
-    ///     .validate(|u: &User| {
-    ///         if u.age > 150 { Err("age must be <= 150".into()) } else { Ok(()) }
-    ///     })
-    ///     .await?.value;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn validate<F>(self, f: F) -> Self
+    /// See [`Client::with_max_attempts`].
+    pub fn max_attempts(mut self, n: u32) -> Self {
+        self.max_attempts = n.max(1);
+        self
+    }
+
+    /// See [`Client::with_timeout`].
+    pub fn timeout(mut self, d: Duration) -> Self {
+        self.timeout = d;
+        self
+    }
+
+    /// Text appended to the prompt under "Additional context:".
+    pub fn context(mut self, ctx: impl Into<String>) -> Self {
+        self.context = Some(ctx.into());
+        self
+    }
+
+    /// Attach an image or document to the prompt.
+    pub fn part(mut self, p: Part) -> Self {
+        self.parts.push(p);
+        self
+    }
+
+    /// Conversation history sent before the prompt.
+    pub fn messages(mut self, history: impl IntoIterator<Item = Message>) -> Self {
+        self.history = history.into_iter().collect();
+        self
+    }
+
+    /// Check each parsed answer; an error is sent back to the model, which
+    /// is asked again.
+    pub fn validate<F>(mut self, f: F) -> Self
     where
         F: Fn(&T) -> std::result::Result<(), ValidationError> + Send + Sync + 'static,
     {
-        Self {
-            validator: Some(Box::new(f)),
-            ..self
+        self.validator = Some(Arc::new(f));
+        self
+    }
+
+    pub(crate) fn validator(mut self, v: Validator<T>) -> Self {
+        self.validator = Some(v);
+        self
+    }
+
+    /// Validate with `T`'s [`Validate`] impl.
+    pub fn validated(mut self) -> Self
+    where
+        T: Validate,
+    {
+        self.validator = Some(Arc::new(|v: &T| v.validate()));
+        self
+    }
+
+    /// When the answer is cut off by the token limit, close it, parse it and
+    /// return it with `truncated: true` instead of failing. It parses only
+    /// when every missing field is optional; `extract_many` returns the
+    /// items that were complete. Nothing is made up: an unfinished string or
+    /// number is dropped.
+    pub fn accept_truncated(mut self) -> Self {
+        self.accept_truncated = true;
+        self
+    }
+
+    /// Called with each request before it is sent.
+    pub fn on_request(mut self, f: impl Fn(&HttpRequest) + Send + Sync + 'static) -> Self {
+        self.hooks.on_request = Some(Box::new(f));
+        self
+    }
+
+    /// Called with the total usage after a successful extraction.
+    pub fn on_response(mut self, f: impl Fn(&Usage) + Send + Sync + 'static) -> Self {
+        self.hooks.on_response = Some(Box::new(f));
+        self
+    }
+
+    /// Stream the response and call `f` with each text delta.
+    pub fn on_delta(mut self, f: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.hooks.on_delta = Some(Box::new(f));
+        self
+    }
+
+    /// Stream the response and call `f` after each delta with the JSON
+    /// parsed so far. For `extract_many` the view is the list. A re-ask
+    /// starts a new value.
+    pub fn on_partial(mut self, f: impl Fn(PartialValue<'_>) + Send + Sync + 'static) -> Self {
+        self.hooks.on_partial = Some(Box::new(f));
+        self
+    }
+
+    /// The sans-IO state machine for this extraction.
+    pub fn exchange(self) -> Exchange<T> {
+        self.split().0
+    }
+
+    fn split(self) -> (Exchange<T>, Transports, Duration) {
+        let c = &self.client.inner;
+        let mut targets = vec![Target {
+            provider: c.provider.clone(),
+            model: self
+                .model
+                .unwrap_or_else(|| c.provider.default_model().to_owned()),
+            mode: self.mode.unwrap_or(c.mode),
+        }];
+        let mut transports = vec![c.transport.clone()];
+        for f in &c.fallbacks {
+            let f = &f.inner;
+            targets.push(Target {
+                provider: f.provider.clone(),
+                model: f
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| f.provider.default_model().to_owned()),
+                mode: f.mode,
+            });
+            transports.push(f.transport.clone());
         }
+        let mut text = self.prompt;
+        if let Some(ctx) = self.context {
+            text = format!("{text}\n\nAdditional context:\n{ctx}");
+        }
+        let mut user = Message::user(text);
+        for p in self.parts {
+            user = user.with(p);
+        }
+        let mut messages = self.history;
+        messages.push(user);
+        let spec = Spec {
+            targets,
+            system: self.system,
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            reasoning: self.reasoning,
+            messages,
+            schema: self.schema,
+            list: self.list,
+            max_attempts: self.max_attempts,
+            retry: self.retry,
+            accept_truncated: self.accept_truncated,
+            validator: self.validator,
+            hooks: self.hooks,
+        };
+        (Exchange::new(spec), transports, self.timeout)
     }
 }
 
-impl<T> ExtractBuilder<'_, T>
-where
-    T: DeserializeOwned + JsonSchema + Validate,
-{
-    /// Enable trait-based validation. Calls `T::validate()` after deserialization.
-    /// If validation fails, the error is fed back to the LLM for retry.
-    ///
-    /// ```rust,no_run
-    /// # use serde::Deserialize;
-    /// # use schemars::JsonSchema;
-    /// # use instructors::{Validate, ValidationError};
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct Email { address: String }
-    ///
-    /// impl Validate for Email {
-    ///     fn validate(&self) -> Result<(), ValidationError> {
-    ///         if self.address.contains('@') { Ok(()) }
-    ///         else { Err("invalid email".into()) }
-    ///     }
-    /// }
-    ///
-    /// # async fn run() -> instructors::Result<()> {
-    /// let client = instructors::Client::openai("sk-...");
-    /// let email: Email = client.extract("...").validated().await?.value;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn validated(self) -> Self {
-        Self {
-            validator: Some(Box::new(|v: &T| v.validate())),
-            ..self
-        }
+impl<T: DeserializeOwned> Extract<'_, Vec<T>> {
+    /// Stream the response and call `f` with each list item as soon as it
+    /// is complete. Items that do not parse into `T` are skipped here; the
+    /// final result still reports them.
+    pub fn on_item(mut self, f: impl Fn(T) + Send + Sync + 'static) -> Self {
+        self.hooks.on_item = Some(Box::new(move |json: &str| {
+            if let Ok(v) = crate::json::from_str::<T>(json) {
+                f(v);
+            }
+        }));
+        self
     }
 }
 
-impl<'a, T> IntoFuture for ExtractBuilder<'a, T>
+impl<'a, T> IntoFuture for Extract<'a, T>
 where
-    T: DeserializeOwned + JsonSchema + Send + Sync + 'static,
+    T: DeserializeOwned + Send + 'a,
 {
-    type Output = Result<ExtractResult<T>>;
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
+    type Output = Result<Extracted<T>>;
+    type IntoFuture = BoxFuture<'a, Self::Output>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.execute())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(serde::Deserialize, JsonSchema)]
-    struct Dummy {
-        x: i32,
-    }
-
-    #[test]
-    fn inherits_client_defaults() {
-        let client = Client::openai("key")
-            .with_model("gpt-5.6-luna")
-            .with_system("custom")
-            .with_reasoning(Reasoning::Budget(10));
-        let b = client.extract::<Dummy>("p");
-        assert_eq!(b.prompt, "p");
-        assert_eq!(b.model.as_deref(), Some("gpt-5.6-luna"));
-        assert_eq!(b.system.as_deref(), Some("custom"));
-        assert_eq!(b.max_retries, 2);
-        assert_eq!(b.temperature, Some(0.0));
-        assert_eq!(b.max_tokens, None);
-        assert_eq!(b.reasoning, Some(Reasoning::Budget(10)));
-        assert!(!b.list);
-        assert!(client.extract_many::<Dummy>("p").list);
-    }
-
-    #[test]
-    fn overrides() {
-        let client = Client::openai("key");
-        let b = client
-            .extract::<Dummy>("p")
-            .model("m")
-            .system("s")
-            .temperature(0.7)
-            .max_tokens(1024)
-            .max_retries(5)
-            .reasoning(Reasoning::Off)
-            .context("c")
-            .timeout(Duration::from_secs(9))
-            .image(ImageInput::Url("u".into()))
-            .images(vec![ImageInput::Url("v".into())])
-            .messages(vec![Message::user("hi")])
-            .on_request(|_, _| {})
-            .on_response(|_| {})
-            .on_stream(|_| {})
-            .on_partial(|_| {});
-        assert_eq!(b.model.as_deref(), Some("m"));
-        assert_eq!(b.max_tokens, Some(1024));
-        assert_eq!(b.reasoning, Some(Reasoning::Off));
-        assert_eq!(b.images.len(), 2);
-        assert_eq!(b.timeout, Duration::from_secs(9));
-        assert!(b.on_partial.is_some());
-    }
-
-    #[test]
-    fn validators() {
-        let client = Client::openai("key");
-        let b = client
-            .extract::<Dummy>("p")
-            .validate(|d| if d.x > 0 { Ok(()) } else { Err("neg".into()) });
-        let v = b.validator.as_ref().unwrap();
-        assert!(v(&Dummy { x: 1 }).is_ok());
-        assert_eq!(v(&Dummy { x: -1 }).unwrap_err().message, "neg");
+        let (ex, transports, timeout) = self.split();
+        #[cfg(feature = "tracing")]
+        {
+            use tracing::Instrument;
+            let span = tracing::info_span!(
+                "instructors.extract",
+                provider = ex.provider_name(),
+                model = ex.model(),
+            );
+            Box::pin(drive::run(ex, transports, timeout).instrument(span))
+        }
+        #[cfg(not(feature = "tracing"))]
+        Box::pin(drive::run(ex, transports, timeout))
     }
 }

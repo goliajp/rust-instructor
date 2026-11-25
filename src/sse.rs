@@ -7,7 +7,7 @@
 //! line that would end an event.
 
 #[derive(Default)]
-pub(crate) struct SseDecoder {
+pub struct SseDecoder {
     buf: Vec<u8>,
     // bytes of `buf` already known to hold no newline
     scanned: usize,
@@ -15,7 +15,7 @@ pub(crate) struct SseDecoder {
 
 impl SseDecoder {
     /// Feed raw bytes; `on_data` receives each complete `data:` payload.
-    pub(crate) fn feed(&mut self, bytes: &[u8], mut on_data: impl FnMut(&str)) {
+    pub fn feed(&mut self, bytes: &[u8], mut on_data: impl FnMut(&str)) {
         self.buf.extend_from_slice(bytes);
         let mut start = 0;
         let mut from = self.scanned;
@@ -30,7 +30,7 @@ impl SseDecoder {
     }
 
     /// Deliver a final line that had no trailing newline.
-    pub(crate) fn finish(&mut self, mut on_data: impl FnMut(&str)) {
+    pub fn finish(&mut self, mut on_data: impl FnMut(&str)) {
         let rest = std::mem::take(&mut self.buf);
         self.scanned = 0;
         if !rest.is_empty() {

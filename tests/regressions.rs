@@ -3,30 +3,30 @@
 mod support;
 
 use instructors::Client;
-use schemars::JsonSchema;
+use instructors::{OutputMode, RetryPolicy, Schema};
 use serde::Deserialize;
 use serde_json::json;
 use support::{Reply, anthropic_text, gemini_ok, openai_ok, start};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Node {
     name: String,
     children: Vec<Node>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Doc {
     title: String,
     root: Node,
 }
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Article {
     title: String,
     format: String,
@@ -59,7 +59,7 @@ async fn recursive_type_on_anthropic_structured_output_uses_a_tool() {
     });
     let (base, log) = start(vec![Reply::json("/messages", 200, tool)]).await;
     let r = Client::anthropic_compatible("k", base)
-        .with_anthropic_structured_output()
+        .with_output_mode(OutputMode::Schema)
         .extract::<Doc>("x")
         .await
         .unwrap();
@@ -149,7 +149,7 @@ async fn stream_keeps_a_character_split_across_reads() {
     let (base, _) = start(vec![Reply::sse("/chat", split_utf8_stream())]).await;
     let r = Client::openai_compatible("k", base)
         .extract::<Contact>("x")
-        .on_stream(|_| {})
+        .on_delta(|_| {})
         .await
         .unwrap();
     assert_eq!(r.value.name, "東");
@@ -160,7 +160,7 @@ async fn openai_stream_asks_for_and_counts_usage() {
     let (base, log) = start(vec![Reply::sse("/chat", split_utf8_stream())]).await;
     let r = Client::openai_compatible("k", base)
         .extract::<Contact>("x")
-        .on_stream(|_| {})
+        .on_delta(|_| {})
         .await
         .unwrap();
     assert_eq!(
@@ -180,6 +180,7 @@ async fn fallback_sends_its_own_model_and_reports_every_error() {
     .await;
     let err = Client::openai_compatible("k", base.clone())
         .with_model("gpt-5.6-terra")
+        .with_retry(RetryPolicy::none())
         .with_fallback(Client::anthropic_compatible("k", base))
         .extract::<Contact>("x")
         .await
@@ -187,10 +188,17 @@ async fn fallback_sends_its_own_model_and_reports_every_error() {
     let reqs = log.requests();
     assert_eq!(reqs[0].1["model"], "gpt-5.6-terra");
     assert_eq!(reqs[1].1["model"], "claude-sonnet-5");
-    let text = err.to_string();
-    assert!(text.contains("primary down"), "{text}");
-    assert!(text.contains("fallback rejected"), "{text}");
-    assert!(matches!(err, instructors::Error::Api { status: 500, .. }));
+    // each provider's error is one link of the chain, the last tried first
+    let texts: Vec<String> = err.chain().map(ToString::to_string).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(texts[0].contains("fallback rejected"), "{texts:?}");
+    assert!(texts[1].contains("primary down"), "{texts:?}");
+    assert!(matches!(err, instructors::Error::Fallback { .. }));
+    let links: Vec<&instructors::Error> = err.chain().collect();
+    assert!(matches!(
+        links[1],
+        instructors::Error::Api { status: 500, .. }
+    ));
 }
 
 #[tokio::test]
@@ -284,7 +292,7 @@ async fn anthropic_refusal_stop_reason() {
     });
     let (base, _) = start(vec![Reply::json("/messages", 200, body)]).await;
     let err = Client::anthropic_compatible("k", base)
-        .with_anthropic_structured_output()
+        .with_output_mode(OutputMode::Schema)
         .extract::<Contact>("x")
         .await
         .unwrap_err();
@@ -293,7 +301,7 @@ async fn anthropic_refusal_stop_reason() {
 
 #[tokio::test]
 async fn anthropic_structured_output_strips_unsupported_keywords() {
-    #[derive(Deserialize, JsonSchema)]
+    #[derive(Deserialize, Schema)]
     #[expect(dead_code, reason = "fields are only filled by deserialization")]
     struct Item {
         qty: u32,
@@ -306,7 +314,7 @@ async fn anthropic_structured_output_strips_unsupported_keywords() {
     )])
     .await;
     Client::anthropic_compatible("k", base)
-        .with_anthropic_structured_output()
+        .with_output_mode(OutputMode::Schema)
         .extract::<Item>("x")
         .await
         .unwrap();
@@ -319,16 +327,14 @@ async fn anthropic_structured_output_strips_unsupported_keywords() {
     );
 }
 
-#[cfg(feature = "preserve-order")]
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Reasoned {
     reasoning: String,
     answer: String,
     confidence: f64,
 }
 
-#[cfg(feature = "preserve-order")]
 #[tokio::test]
 async fn schema_properties_keep_declaration_order() {
     const R: &str = r#"{"reasoning":"r","answer":"a","confidence":1}"#;
@@ -343,7 +349,7 @@ async fn schema_properties_keep_declaration_order() {
         .await
         .unwrap();
     Client::anthropic_compatible("k", base.clone())
-        .with_anthropic_structured_output()
+        .with_output_mode(OutputMode::Schema)
         .extract::<Reasoned>("x")
         .await
         .unwrap();
@@ -351,18 +357,14 @@ async fn schema_properties_keep_declaration_order() {
         .extract::<Reasoned>("x")
         .await
         .unwrap();
-    let schemas = [
-        log.body(0)["response_format"]["json_schema"]["schema"].clone(),
-        log.body(1)["output_config"]["format"]["schema"].clone(),
-        log.body(2)["generationConfig"]["responseSchema"].clone(),
-    ];
-    for s in schemas {
-        let keys: Vec<&str> = s["properties"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(keys, ["reasoning", "answer", "confidence"], "{s}");
+    // the raw bodies, since serde_json's map sorts keys
+    for i in 0..3 {
+        let raw = log.raw(i);
+        let at = |k: &str| raw.find(&format!("\"{k}\":")).unwrap();
+        assert!(
+            at("reasoning") < at("answer") && at("answer") < at("confidence"),
+            "{raw}"
+        );
     }
+    assert!(log.body(2)["generationConfig"]["responseJsonSchema"].is_object());
 }

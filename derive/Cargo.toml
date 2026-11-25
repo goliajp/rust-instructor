@@ -1,0 +1,21 @@
+[package]
+name = "instructors-derive"
+version = "1.5.1"
+edition = "2024"
+description = "Derive macro for the instructors crate's Schema trait"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/goliajp/rust-instructor"
+authors = ["GOLIA株式会社", "Li Hao <lihao@golia.jp>"]
+documentation = "https://docs.rs/instructors-derive"
+keywords = ["llm", "json-schema", "derive"]
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+# the same crates and syn features serde_derive uses, so a crate that already
+# derives Deserialize builds nothing extra
+[dependencies]
+proc-macro2 = { version = "1.0.74", default-features = false, features = ["proc-macro"] }
+quote = { version = "1.0.35", default-features = false, features = ["proc-macro"] }
+syn = { version = "3", default-features = false, features = ["clone-impls", "derive", "parsing", "printing", "proc-macro"] }

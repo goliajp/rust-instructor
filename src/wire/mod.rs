@@ -1,0 +1,334 @@
+//! Request bytes out, response bytes in, one module per wire protocol. No
+//! I/O and no async here.
+
+mod anthropic;
+mod gemini;
+mod openai_chat;
+mod openai_resp;
+#[cfg(test)]
+mod tests;
+
+pub(crate) use openai_chat::Host;
+
+use crate::message::Message;
+use crate::reasoning::Reasoning;
+use crate::schema::SchemaEntry;
+use crate::usage::Usage;
+
+/// How the schema reaches the model.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputMode {
+    /// The provider's native structured output: OpenAI `json_schema`
+    /// (strict), Anthropic `output_config.format`, Gemini
+    /// `responseJsonSchema`.
+    Schema,
+    /// A tool whose input is the schema, called by the model (forced where
+    /// the model allows it). Not available on Gemini or the OpenAI
+    /// Responses API.
+    Tool,
+    /// JSON mode (`response_format: {"type": "json_object"}`) with the schema
+    /// in the system prompt. Anthropic has no JSON mode and gets
+    /// [`Prompt`](Self::Prompt).
+    JsonObject,
+    /// No format parameter; the schema goes in the system prompt and the
+    /// JSON is taken from the answer text.
+    Prompt,
+}
+
+/// Which OpenAI API an OpenAI client calls.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenAiApi {
+    /// `POST /chat/completions`, the default; every compatible server has it.
+    ChatCompletions,
+    /// `POST /responses`.
+    Responses,
+}
+
+/// HTTP headers in order. Names compare case-insensitively.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Headers(Vec<(String, String)>);
+
+impl Headers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.0.push((name.into(), value.into()));
+    }
+
+    /// The first value for `name`.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+}
+
+/// One HTTP request, ready to send.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpRequest {
+    /// Always `"POST"` today.
+    pub method: &'static str,
+    pub url: String,
+    pub headers: Headers,
+    /// JSON bytes.
+    pub body: Vec<u8>,
+    /// The response is a server-sent event stream.
+    pub stream: bool,
+}
+
+/// The wire protocol and its host-specific details.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Wire {
+    OpenAiChat(Host),
+    OpenAiResponses,
+    Anthropic,
+    Gemini,
+}
+
+/// One provider endpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Provider {
+    pub(crate) wire: Wire,
+    pub(crate) key: String,
+    pub(crate) base_url: String,
+}
+
+/// Everything one request needs.
+pub(crate) struct Req<'a> {
+    pub(crate) model: &'a str,
+    pub(crate) system: Option<&'a str>,
+    pub(crate) messages: &'a [Message],
+    pub(crate) schema: &'static SchemaEntry,
+    pub(crate) temperature: Option<f64>,
+    pub(crate) max_tokens: Option<u32>,
+    pub(crate) reasoning: Option<Reasoning>,
+    pub(crate) mode: OutputMode,
+    pub(crate) stream: bool,
+}
+
+/// Why the model stopped, when it matters to the caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Stop {
+    Done,
+    /// Cut off by the output token limit; the provider's reason.
+    Truncated(String),
+}
+
+/// What one response carried.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Answer {
+    pub(crate) content: String,
+    pub(crate) usage: Usage,
+    pub(crate) stop: Stop,
+}
+
+/// A response that is not an answer.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Fail {
+    /// The model declined; the usage of the response that said so.
+    Refusal(String, Usage),
+    /// The body is not the provider's response format.
+    Malformed(String),
+    Unsupported(String),
+}
+
+pub(crate) const DEFAULT_SYSTEM: &str = "Extract the requested information from the given text. \
+     Return valid JSON matching the provided schema.";
+
+pub(crate) const SCHEMA_IN_PROMPT: &str =
+    "\n\nAnswer with one JSON value and no other text. It must match this JSON Schema:\n";
+
+impl Provider {
+    pub(crate) fn name(&self) -> &'static str {
+        match &self.wire {
+            Wire::OpenAiChat(h) => h.name(),
+            Wire::OpenAiResponses => "openai",
+            Wire::Anthropic => "anthropic",
+            Wire::Gemini => "gemini",
+        }
+    }
+
+    /// The model used when the caller sets none. Each is its provider's
+    /// current balanced tier; they move with minor releases.
+    pub(crate) fn default_model(&self) -> &'static str {
+        match &self.wire {
+            Wire::OpenAiChat(_) | Wire::OpenAiResponses => "gpt-5.6-terra",
+            Wire::Anthropic => "claude-sonnet-5",
+            Wire::Gemini => "gemini-3.6-flash",
+        }
+    }
+
+    pub(crate) fn request(&self, r: &Req<'_>) -> Result<HttpRequest, Fail> {
+        match &self.wire {
+            Wire::OpenAiChat(h) => openai_chat::request(self, *h, r),
+            Wire::OpenAiResponses => openai_resp::request(self, r),
+            Wire::Anthropic => anthropic::request(self, r),
+            Wire::Gemini => gemini::request(self, r),
+        }
+    }
+
+    pub(crate) fn response(&self, r: &Req<'_>, body: &[u8]) -> Result<Answer, Fail> {
+        match &self.wire {
+            Wire::OpenAiChat(_) => openai_chat::response(r, body),
+            Wire::OpenAiResponses => openai_resp::response(body),
+            Wire::Anthropic => anthropic::response(r, body),
+            Wire::Gemini => gemini::response(body),
+        }
+    }
+
+    pub(crate) fn stream(&self, r: &Req<'_>) -> Stream {
+        match &self.wire {
+            Wire::OpenAiChat(_) => Stream::OpenAiChat(Default::default()),
+            Wire::OpenAiResponses => Stream::OpenAiResponses(Default::default()),
+            Wire::Anthropic => Stream::Anthropic(anthropic::StreamAcc::new(r)),
+            Wire::Gemini => Stream::Gemini(Default::default()),
+        }
+    }
+}
+
+/// Accumulates one streamed response, event by event.
+pub(crate) enum Stream {
+    OpenAiChat(openai_chat::StreamAcc),
+    OpenAiResponses(openai_resp::StreamAcc),
+    Anthropic(anthropic::StreamAcc),
+    Gemini(gemini::StreamAcc),
+}
+
+impl Stream {
+    /// One SSE `data:` payload; `sink` receives each answer text delta.
+    pub(crate) fn event(&mut self, data: &str, sink: &mut dyn FnMut(&str)) {
+        match self {
+            Self::OpenAiChat(a) => a.event(data, sink),
+            Self::OpenAiResponses(a) => a.event(data, sink),
+            Self::Anthropic(a) => a.event(data, sink),
+            Self::Gemini(a) => a.event(data, sink),
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<Answer, Fail> {
+        match self {
+            Self::OpenAiChat(a) => a.finish(),
+            Self::OpenAiResponses(a) => a.finish(),
+            Self::Anthropic(a) => a.finish(),
+            Self::Gemini(a) => a.finish(),
+        }
+    }
+}
+
+/// System prompt with the schema appended, for the modes that carry the
+/// schema in text.
+pub(crate) fn system_with_schema(base: &str, r: &Req<'_>) -> String {
+    use crate::schema::Dialect;
+    let schema = r.schema.get(Dialect::AnthropicTool);
+    let mut s = String::with_capacity(base.len() + SCHEMA_IN_PROMPT.len() + schema.len());
+    s.push_str(base);
+    s.push_str(SCHEMA_IN_PROMPT);
+    s.push_str(schema);
+    s
+}
+
+/// Writes one JSON object member by member.
+pub(crate) struct Obj<'a> {
+    out: &'a mut Vec<u8>,
+    first: bool,
+}
+
+impl<'a> Obj<'a> {
+    pub(crate) fn new(out: &'a mut Vec<u8>) -> Self {
+        out.push(b'{');
+        Self { out, first: true }
+    }
+
+    /// Write `"key":` and return the buffer for the value.
+    pub(crate) fn key(&mut self, key: &str) -> &mut Vec<u8> {
+        if !self.first {
+            self.out.push(b',');
+        }
+        self.first = false;
+        crate::json::write_str(self.out, key);
+        self.out.push(b':');
+        self.out
+    }
+
+    pub(crate) fn str(&mut self, key: &str, v: &str) {
+        crate::json::write_str(self.key(key), v);
+    }
+
+    pub(crate) fn raw(&mut self, key: &str, json: &str) {
+        self.key(key).extend_from_slice(json.as_bytes());
+    }
+
+    pub(crate) fn u64(&mut self, key: &str, v: u64) {
+        crate::json::write_u64(self.key(key), v);
+    }
+
+    pub(crate) fn f64(&mut self, key: &str, v: f64) {
+        crate::json::write_f64(self.key(key), v);
+    }
+
+    pub(crate) fn bool(&mut self, key: &str, v: bool) {
+        self.raw(key, if v { "true" } else { "false" });
+    }
+
+    pub(crate) fn end(self) {
+        self.out.push(b'}');
+    }
+}
+
+/// Writes one JSON array item by item.
+pub(crate) struct Arr<'a> {
+    out: &'a mut Vec<u8>,
+    first: bool,
+}
+
+impl<'a> Arr<'a> {
+    pub(crate) fn new(out: &'a mut Vec<u8>) -> Self {
+        out.push(b'[');
+        Self { out, first: true }
+    }
+
+    pub(crate) fn item(&mut self) -> &mut Vec<u8> {
+        if !self.first {
+            self.out.push(b',');
+        }
+        self.first = false;
+        self.out
+    }
+
+    pub(crate) fn end(self) {
+        self.out.push(b']');
+    }
+}
+
+/// `{"type": t}` objects and the like, written inline.
+pub(crate) fn type_obj(out: &mut Vec<u8>, t: &str) {
+    let mut o = Obj::new(out);
+    o.str("type", t);
+    o.end();
+}
+
+pub(crate) fn json_headers(extra: &[(&str, &str)]) -> Headers {
+    let mut h = Headers::new();
+    h.push("content-type", "application/json");
+    for (k, v) in extra {
+        h.push(*k, *v);
+    }
+    h
+}
+
+/// Parse a response envelope, mapping errors to [`Fail::Malformed`].
+pub(crate) fn envelope<'de, T: serde::Deserialize<'de>>(body: &'de [u8]) -> Result<T, Fail> {
+    crate::json::from_slice(body).map_err(|e| {
+        let text = String::from_utf8_lossy(body);
+        Fail::Malformed(format!("{e} (body: {})", crate::text::clip(&text, 200)))
+    })
+}

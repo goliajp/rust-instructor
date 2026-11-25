@@ -7,7 +7,7 @@
 
 use instructors::prelude::*;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct ProductReview {
     product: String,
     sentiment: String,
@@ -15,22 +15,22 @@ struct ProductReview {
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let client = Client::openai(&api_key).with_model("gpt-5.6-luna");
 
     let reviews = vec![
-        "The new MacBook Pro is incredible, best laptop I've ever owned!".into(),
-        "This phone case broke after just one week, terrible quality.".into(),
-        "The headphones are decent for the price, nothing special.".into(),
-        "Amazing camera quality on the new Pixel, highly recommended!".into(),
-        "The keyboard is uncomfortable and the keys are too small.".into(),
+        "The new MacBook Pro is incredible, best laptop I've ever owned!",
+        "This phone case broke after just one week, terrible quality.",
+        "The headphones are decent for the price, nothing special.",
+        "Amazing camera quality on the new Pixel, highly recommended!",
+        "The keyboard is uncomfortable and the keys are too small.",
     ];
 
     println!("Processing {} reviews concurrently...\n", reviews.len());
 
     let results = client
-        .extract_batch::<ProductReview>(reviews)
+        .extract_batch::<ProductReview>(reviews.into_iter().map(String::from))
         .concurrency(5)
         .validate(|r: &ProductReview| {
             if !(0.0..=10.0).contains(&r.score) {

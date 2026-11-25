@@ -6,12 +6,12 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use instructors::{Client, Effort, Reasoning};
-use schemars::JsonSchema;
+use instructors::{OutputMode, Schema};
 use serde::Deserialize;
 use serde_json::json;
 use support::{Reply, anthropic_text, gemini_ok, openai_ok, start};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
 }
@@ -31,7 +31,7 @@ async fn nothing_is_sent_by_default() {
         .await
         .unwrap();
     Client::anthropic_compatible("k", base.clone())
-        .with_anthropic_structured_output()
+        .with_output_mode(OutputMode::Schema)
         .extract::<Contact>("x")
         .await
         .unwrap();
@@ -79,7 +79,7 @@ async fn openai_budget_is_an_error_before_sending() {
 #[tokio::test]
 async fn anthropic_effort_budget_and_off() {
     let (base, log) = start(vec![Reply::json("/messages", 200, anthropic_text(OK))]).await;
-    let c = Client::anthropic_compatible("k", base).with_anthropic_structured_output();
+    let c = Client::anthropic_compatible("k", base).with_output_mode(OutputMode::Schema);
     for r in [
         Reasoning::Effort(Effort::XHigh),
         Reasoning::Budget(4096),
@@ -165,7 +165,7 @@ fn delta_events(content: &str, size: usize) -> Vec<Vec<u8>> {
 #[tokio::test]
 async fn on_partial_sees_the_value_grow() {
     #[expect(dead_code, reason = "fields are only filled by deserialization")]
-    #[derive(Debug, Deserialize, JsonSchema)]
+    #[derive(Debug, Deserialize, Schema)]
     struct Article {
         title: String,
         tags: Vec<String>,
@@ -176,7 +176,12 @@ async fn on_partial_sees_the_value_grow() {
     let seen2 = seen.clone();
     let r = Client::openai_compatible("k", base)
         .extract::<Article>("x")
-        .on_partial(move |v| seen2.lock().unwrap().push(v.to_value()))
+        .on_partial(move |v| {
+            seen2
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str::<serde_json::Value>(&v.to_json()).unwrap())
+        })
         .await
         .unwrap();
     assert_eq!(r.value.tags, ["rust", "llm"]);
@@ -200,7 +205,10 @@ async fn on_partial_for_extract_many_shows_the_list() {
     let last2 = last.clone();
     let r = Client::openai_compatible("k", base)
         .extract_many::<Contact>("x")
-        .on_partial(move |v| *last2.lock().unwrap() = Some(v.to_value()))
+        .on_partial(move |v| {
+            *last2.lock().unwrap() =
+                Some(serde_json::from_str::<serde_json::Value>(&v.to_json()).unwrap())
+        })
         .await
         .unwrap();
     assert_eq!(r.value.len(), 2);

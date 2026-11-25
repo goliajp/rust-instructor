@@ -7,24 +7,27 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-> **Upgrading to 1.5?** The API only grows, but four requests change on the wire. `Client::anthropic` now sends the schema as structured output (`output_config.format`) instead of a forced tool call, because Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 and later reject forced tool calls; `.with_anthropic_tool_use()` restores the old request. `extract_many` asks for `{"items": [...]}` instead of a bare array. A max-tokens setting now reaches OpenAI-family APIs. The Gemini key moves from the URL to the `x-goog-api-key` header. Details: [CHANGELOG](CHANGELOG.md#150---2026-11-25).
+> **Upgrading from 1.x?** Derive `Schema` instead of `JsonSchema`, add a `_ =>` arm when matching `Error`, and call `usage.total_tokens()` as a method. Schema properties now follow declaration order, HTTP retries are on by default, and a re-ask shows the model its previous answer. The full list with before and after code is in the [CHANGELOG](CHANGELOG.md#upgrading-from-1x).
 
-Typed structured output from LLMs, in Rust. Derive `Deserialize` and `JsonSchema` on a type, call `extract`, and get a value of that type back. The crate sends the type's JSON schema in the form each provider enforces, repairs malformed JSON, and when parsing or your own validation fails, sends the error back to the model and asks again. It follows the design of Python's [instructor](https://github.com/567-labs/instructor).
+Typed structured output from LLMs, in Rust. Derive `Deserialize` and `Schema` on a type, call `extract`, and get a value of that type back. The crate sends the type's JSON schema in the form each provider enforces, repairs malformed JSON, and when parsing or your own validation fails, shows the model its answer and the error and asks again. It follows the design of Python's [instructor](https://github.com/567-labs/instructor).
 
-On a loopback benchmark with an 8-item invoice, one `extract` call costs 2.3 µs of client CPU time above a bare `reqwest` request, against 25.1 µs for rstructor 0.6.0 and 28.4 µs for rig-core 0.47.1. Streaming partial values for a 1.2 KB answer in 308 deltas costs 5.5 µs in total, against 677 µs for the reparse-per-delta approach rstructor uses. Conditions and full tables are under [Performance](#performance).
+The crate has no third-party runtime dependency of its own: the schema derive, the JSON parser, the repair and the streaming parser are part of it, and serde is the only interface your types need. The HTTP client is a trait; the default implementation is reqwest with rustls. With `default-features = false` the crate builds requests and parses responses without doing any I/O and without an async runtime, and builds for `wasm32-unknown-unknown`.
+
+Parsing an OpenAI response body into a 1.2 KB `Invoice` takes 3.0 µs; with `serde_json` it takes 4.1 µs. One complete `extract` call over loopback HTTP takes 53 to 54 µs, about as long as a plain `reqwest` POST and parse in the same process; rstructor 0.6.0 takes 77 µs and rig-core 0.47.1 takes 81 µs. Conditions and all rows are under [Performance](#performance).
 
 ## Quick start
 
 ```toml
 [dependencies]
-instructors = "1"
+instructors = "2"
 ```
 
 ```rust
 use instructors::prelude::*;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
+    /// Full name as written in the text.
     name: String,
     email: Option<String>,
 }
@@ -36,22 +39,50 @@ let contact: Contact = client
     .value;
 ```
 
+Doc comments become `description`s in the schema. Fields keep their declaration order, which matters: OpenAI writes fields in schema order, so a `reasoning` field placed before `answer` is generated first.
+
+## Schema
+
+`#[derive(Schema)]` reads the type's serde attributes, so the schema describes the JSON the `Deserialize` impl accepts: `rename`, `rename_all`, `default`, `skip`, `flatten`, `tag`, `content`, `untagged`, `transparent` and `deny_unknown_fields`. A serde attribute that changes the JSON in a way the derive cannot see (`deserialize_with`, `with`, `try_from`, `from`) is a compile error unless you say what the JSON looks like with `#[schema(like = SomeType)]`.
+
+```rust
+#[derive(Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
+struct Event {
+    #[schema(description = "ISO 8601", format = "date-time")]
+    starts_at: String,
+    #[schema(min = 1, max = 5)]
+    priority: u8,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+```
+
+The derive is built on `syn` 3 with exactly the features `serde_derive` uses, so a crate that already derives `Deserialize` compiles no additional crate for it. Types that only implement `schemars::JsonSchema` work through feature `schemars` and `client.extract_schemars::<T>(..)`.
+
 ## Providers
 
-Three wire protocols. The `_compatible` constructors point one of them at another base URL.
-
-| Constructor | Protocol | How the schema is sent |
+| Constructor | Protocol | How the schema is sent by default |
 |---|---|---|
 | `Client::openai(key)` | OpenAI Chat Completions | `response_format` with a strict `json_schema` |
-| `Client::openai_compatible(key, url)` | same | same; the server must support strict `json_schema` |
+| `Client::openai(key).with_api(OpenAiApi::Responses)` | OpenAI Responses | `text.format` with a strict `json_schema` |
+| `Client::openai_compatible(key, url)` | Chat Completions | strict `json_schema`; JSON mode for DeepSeek, Qwen and GLM hosts |
 | `Client::anthropic(key)` | Anthropic Messages | `output_config.format` (structured output) |
 | `Client::anthropic_compatible(key, url)` | same | a tool with forced `tool_choice` |
-| `Client::gemini(key)` | Gemini `generateContent` | `generationConfig.responseSchema` |
-| `Client::gemini_compatible(key, url)` | same | same |
+| `Client::gemini(key)`, `gemini_compatible(key, url)` | Gemini `generateContent` | `generationConfig.responseJsonSchema` |
 
-`openai_compatible` reads the host of the base URL: `api.openai.com` gets `max_completion_tokens`; DeepSeek (`deepseek.com`), Qwen (`aliyuncs.com`), Kimi (`moonshot.cn`, `moonshot.ai`) and GLM (`bigmodel.cn`, `z.ai`) get their own [reasoning parameters](#reasoning); any other host is treated as a generic OpenAI-compatible server.
+`with_output_mode` changes how the schema is sent:
 
-A type that refers to itself (a tree, a linked list) is sent with `$defs` and `$ref`. Anthropic structured output cannot express recursion, so for such a type the Anthropic request uses a tool with `tool_choice: auto`, and Gemini gets `responseJsonSchema` instead of `responseSchema`.
+| `OutputMode` | What is sent |
+|---|---|
+| `Schema` | the provider's native structured output (the table above) |
+| `Tool` | a tool whose input is the schema, forced where the model allows it; not on Gemini or the Responses API |
+| `JsonObject` | JSON mode (`response_format: json_object`) with the schema in the system prompt; Anthropic, which has no JSON mode, gets `Prompt` |
+| `Prompt` | no format parameter; the schema in the system prompt, the JSON taken from the answer text |
+
+`openai_compatible` reads the host of the base URL: `api.openai.com` gets `max_completion_tokens`; DeepSeek (`deepseek.com`), Qwen (`aliyuncs.com`), Kimi (`moonshot.cn`, `moonshot.ai`, `kimi.ai`, `kimi.com`) and GLM (`bigmodel.cn`, `z.ai`) get their own [reasoning parameters](#reasoning). DeepSeek, Qwen and GLM default to `JsonObject`, because their documentation describes JSON mode and not strict schemas; any other host is treated as a generic OpenAI-compatible server and gets `Schema`.
+
+A type that refers to itself (a tree, a linked list) is sent with `$defs` and `$ref`. Anthropic structured output cannot express recursion, so for such a type the Anthropic request uses a tool with `tool_choice: auto`.
 
 Default models, used when none is set:
 
@@ -92,7 +123,7 @@ Nothing is sent unless it is set. Each provider gets its own parameter:
 
 The crate keeps no list of which model accepts which value. A value the model rejects comes back as `Error::Api` with the provider's message. Some examples from the providers' documentation as of November 2026: Claude Opus 5.5 rejects `thinking: disabled` and `budget_tokens`; Claude Sonnet 5.5 rejects `thinking: disabled`; Gemini 4 models cannot turn thinking off.
 
-On Anthropic, a forced tool call cannot be combined with thinking, so when a reasoning setting is present the tool path (`anthropic_compatible`, or a recursive type) uses `tool_choice: auto`.
+On Anthropic, a forced tool call cannot be combined with thinking, so when a reasoning setting is present the tool path (`OutputMode::Tool`, the default of `anthropic_compatible`, or a recursive type) uses `tool_choice: auto`.
 
 Thinking tokens are billed as output. They are included in `usage.output_tokens` and the cost estimate for all three protocols.
 
@@ -112,21 +143,36 @@ let article: Article = client
     .value;
 ```
 
-The value is a borrowed view into an incremental parser that reads each byte once, so the work for the whole stream grows linearly with its length. Unfinished strings show the characters received so far, and `is_complete()` tells whether a value has closed. `to_value()` copies the view into a `serde_json::Value`. The parser is public as [`instructors::partial::PartialParser`](https://docs.rs/instructors/latest/instructors/partial/) for use outside `extract`.
+The value is a borrowed view into an incremental parser that reads each byte once, so the work for the whole stream grows linearly with its length. Unfinished strings show the characters received so far, and `is_complete()` tells whether a value has closed. `v.parse::<Snapshot>()` deserializes the value so far into a type of your own (usually one with `Option` fields), and `to_json()` gives its JSON text. The parser is public as [`instructors::partial::PartialParser`](https://docs.rs/instructors/latest/instructors/partial/).
 
-`on_stream` gives the raw text deltas instead. With either hook the request is streamed; the final result is parsed from the whole answer as usual. For OpenAI the streaming request asks for usage (`stream_options.include_usage`), so token counts and cost are filled in.
+For `extract_many`, `on_item` hands you each list item as soon as it is complete:
+
+```rust
+let all: Vec<Entity> = client
+    .extract_many("...")
+    .on_item(|e: Entity| println!("found {}", e.name))
+    .await?
+    .value;
+```
+
+`on_delta` gives the raw text deltas. With any of these hooks the request is streamed; the final result is parsed from the whole answer as usual, and token counts and cost are filled in for every provider.
 
 ## Errors you can act on
 
 | Situation | What you get |
 |---|---|
-| The provider returned a non-2xx status | `Error::Api { status, message }` with the response body |
-| The answer did not parse or failed validation after every retry | `Error::ExtractionFailed` or `Error::ValidationFailed` with the last error |
-| The model refused (OpenAI `refusal`, Anthropic `stop_reason: refusal`, Gemini safety stop) | `err.refusal()` returns the refusal text; not retried |
-| The answer hit the output token limit (OpenAI `finish_reason: length`, Anthropic `max_tokens`, Gemini `MAX_TOKENS`) and did not parse | `err.is_truncated()` is true; not retried and not repaired |
-| The whole extraction took longer than the timeout | `Error::Timeout` |
+| The provider returned a non-2xx status after the HTTP retries | `Error::Api { status, message, retry_after, .. }` |
+| The connection failed | `Error::Transport { source, .. }` |
+| The answer did not parse, or failed validation, on every attempt | `Error::Parse { attempts, raw, .. }` or `Error::Validation { .. }` |
+| The model refused (OpenAI `refusal`, Anthropic `stop_reason: refusal`, Gemini safety stop) | `Error::Refusal { text, .. }`; not retried |
+| The answer hit the output token limit and did not parse | `Error::Truncated { reason, raw, .. }`; not retried, unless you called `.accept_truncated()` |
+| A setting the provider has no parameter for (`Reasoning::Budget` on OpenAI) | `Error::Unsupported`, before anything is sent |
+| The whole extraction took longer than the timeout | `Error::Timeout { after, .. }` |
+| Every provider failed | `Error::Fallback`: `chain()` lists each provider's error, newest first, and `source()` links them for anyhow or eyre |
 
-With fallbacks, the error keeps the primary provider's variant and its message lists each fallback's error.
+Every error that came after a request carries what the extraction cost: `err.usage()`.
+
+`.accept_truncated()` turns a cut-off answer into a value when it can be done without inventing anything: open strings and containers are closed, an unfinished key or number is dropped, and the result must still deserialize, so it works when the missing fields are `Option` or `#[serde(default)]`. `extract_many` keeps the items that were complete. The result has `truncated: true`.
 
 ## Validation and retry
 
@@ -140,42 +186,72 @@ let user: User = client
     .value;
 ```
 
-Or implement `Validate` on the type and call `.validated()`. When parsing or validation fails, the next attempt carries the error message, up to `max_retries` (default 2). Before a retry is spent, malformed JSON (trailing commas, single quotes, unquoted keys, a markdown fence around the JSON) is repaired with [jsonrepair](https://crates.io/crates/jsonrepair).
+Or implement `Validate` on the type and call `.validated()`. When parsing or validation fails, the next request appends the model's answer and the error to the conversation and asks again, up to `max_attempts` answers (default 3). Before an attempt is spent, malformed JSON (a markdown fence or prose around the value, trailing commas, single quotes, unquoted keys, comments, Python's `True` / `None`) is repaired.
 
-## Lists, batches, history, images
+## Lists, batches, history, images, documents
 
 ```rust
 // a list: the schema root is {"items": [...]}, the result is Vec<Entity>
 let entities: Vec<Entity> = client.extract_many("Tim Cook met Sundar Pichai").await?.value;
 
 // many prompts, at most 5 requests in flight; results keep the input order
-let results = client.extract_batch::<Review>(prompts).concurrency(5).run().await;
+let results = client.extract_batch::<Review>(prompts).concurrency(5).await;
 
 // conversation history before the prompt
 let r = client
     .extract::<Summary>("summarize the above")
-    .messages(vec![Message::user("..."), Message::assistant("...")])
+    .messages([Message::user("..."), Message::assistant("...")])
     .await?;
 
-// images, by URL or base64
+// images and PDFs, by URL or base64
 let r = client
-    .extract::<Description>("describe this")
-    .image(ImageInput::Url("https://example.com/photo.jpg".into()))
+    .extract::<Invoice>("extract the invoice")
+    .part(Part::document("application/pdf", pdf_base64))
     .await?;
 ```
 
-## Fallback, backoff, timeout
+## Retries, fallback, timeout
 
 ```rust
 use std::time::Duration;
 
 let client = Client::openai("sk-...")
     .with_fallback(Client::anthropic("sk-ant-..."))
-    .with_retry_backoff(BackoffConfig::default()) // 429, 500, 502, 503, 504, 529
-    .with_timeout(Duration::from_secs(120));      // the whole extraction
+    .with_retry(RetryPolicy::new().max_retries(5))
+    .with_timeout(Duration::from_secs(120)); // the whole extraction
 ```
 
-A fallback is tried after the primary provider has used up its retries, with the fallback client's own default model. Backoff is off unless configured; `BackoffConfig::default()` waits 500 ms doubling up to 30 s, with jitter, for at most 3 HTTP retries.
+HTTP retries are on by default: 3 retries on 408, 429, 500, 502, 503, 504, 529 and connection errors, waiting 500 ms doubling up to 30 s with jitter, or what the provider's `Retry-After` / `retry-after-ms` header says. `RetryPolicy::none()` turns them off. A fallback is tried after the primary provider has failed, with the fallback client's own model, output mode and transport.
+
+## Without a runtime, or with your own HTTP client
+
+`.await` drives the request over a `Transport`. The default is reqwest on tokio; any other HTTP client fits through `with_transport`:
+
+```rust
+impl Transport for MyHttp {
+    fn send(&self, req: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, TransportError>> { ... }
+    fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> { ... }
+}
+let client = Client::openai("sk-...").with_transport(MyHttp::new());
+```
+
+Or skip async entirely. `exchange()` returns the extraction as a state machine that says what to send and how long to wait:
+
+```rust
+let mut ex = client.extract::<Contact>("...").exchange();
+let result = loop {
+    match ex.next() {
+        Step::Send(req) => {
+            let (status, headers, body) = my_http(&req)?; // req.url, req.headers, req.body
+            ex.receive(status, &headers, &body);
+        }
+        Step::Wait(d) => std::thread::sleep(d),
+        Step::Done(r) => break r,
+    }
+};
+```
+
+With `default-features = false, features = ["derive"]`, nothing in the build does I/O, and the crate compiles for `wasm32-unknown-unknown`.
 
 ## Settings
 
@@ -187,21 +263,21 @@ let client = Client::openai("sk-...")
     .with_system("Extract data precisely.")
     .with_temperature(0.0)
     .with_max_tokens(4096)
-    .with_max_retries(3);
+    .with_max_attempts(4);
 
 let r: Contact = client
     .extract("...")
     .model("gpt-5.6-terra")
     .context("extra context appended to the prompt")
-    .on_request(|model, prompt| println!("{model}: {} bytes", prompt.len()))
-    .on_response(|usage| println!("{} tokens", usage.total_tokens))
+    .on_request(|req| println!("{} {} bytes", req.url, req.body.len()))
+    .on_response(|usage| println!("{} tokens", usage.total_tokens()))
     .await?
     .value;
 ```
 
 | Setting | OpenAI family | Anthropic | Gemini |
 |---|---|---|---|
-| max tokens | `max_completion_tokens` (OpenAI) or `max_tokens` (compatible); not sent unless set | `max_tokens`, 16384 unless set | `maxOutputTokens`, 16384 unless set |
+| max tokens | `max_completion_tokens` (OpenAI), `max_output_tokens` (Responses) or `max_tokens` (compatible); not sent unless set | `max_tokens`, 16384 unless set | `maxOutputTokens`, 16384 unless set |
 | temperature | sent; 0.0 by default | never sent: current Claude models reject a non-default value | sent when set |
 
 ## Cost
@@ -214,56 +290,50 @@ println!("{} in, {} out, {:?} USD", r.usage.input_tokens, r.usage.output_tokens,
 Cost comes from the [tiktoken](https://crates.io/crates/tiktoken) price table (feature `cost-tracking`, on by default; no vocabulary data is linked). It is computed per request and summed over retries, and is `None` when the table does not know the model. Model ids are resolved by tiktoken, so a provider's spelling of an id (dashes, date suffixes, Bedrock or Vertex prefixes) still prices.
 
 ```toml
-instructors = { version = "1", default-features = false } # no cost tracking
+instructors = { version = "2", default-features = false, features = ["derive", "reqwest"] } # no cost tracking
 ```
-
-## Field order
-
-By default the schema lists a struct's fields in alphabetical order, because schemars stores properties in a `serde_json::Map`, which is sorted unless `serde_json/preserve_order` is enabled. OpenAI generates fields in the order the schema lists them, so a `reasoning` field declared before `answer` is written after it. The `preserve-order` feature keeps declaration order for every provider:
-
-```toml
-instructors = { version = "1", features = ["preserve-order"] }
-```
-
-It turns on `serde_json/preserve_order`, which applies to every crate in your build that uses `serde_json::Map`: their maps keep insertion order instead of sorting, and `indexmap` is added to the build.
 
 ## Performance
 
-Measured on 2026-11-25 on an Apple M4 Pro Mac mini (14 cores) holding an exclusive benchmark lock, release build with LTO and one codegen unit, rustc 1.100.0. The 1-minute load average, sampled every 15 s, stayed between 1.6 and 4.8 for the whole run, builds included. Each figure is the median of 5 to 7 rounds. The 1.4.1 and 1.5 builds were run one after the other, twice; the tables show the first pass, and the second pass agreed within 1.2 µs on the overhead column and within 4 % elsewhere. Payload: an `Invoice` with two nested addresses, an enum, eight line items with optional fields, CJK text and escaped quotes, 1,247 bytes of JSON. Everything runs against a loopback HTTP server; no API is called. The benchmark program is not in this repository.
+Measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores) holding an exclusive benchmark lock, release build with LTO and one codegen unit, rustc 1.100.0, serde 1.0.229, serde_json 1.0.154, reqwest 0.13.5. The 1-minute load average, sampled every 15 s, was between 1.7 and 2.0 during the measurement. Every row was measured in two passes a few seconds apart, and the tables show the median of each pass (5 rounds for the end-to-end rows, 7 or 9 for the others). Payload: an `Invoice` with two nested addresses, an enum, eight line items with optional fields, CJK text and escaped quotes, 1,247 bytes of JSON. All requests go to a loopback HTTP server; no API is called. The JSON and repair rows come from `cargo bench --bench json --features fuzzing`; the program for the other rows is not in this repository.
 
-**One `extract` call, end to end** (sequential calls over a kept-alive HTTP/1.1 connection, 5 × 5,000 calls; the floor is the same `reqwest` client posting a prebuilt body and parsing the reply with `serde_json`, measured in the same process):
+**One `extract` call, end to end** (OpenAI wire, sequential calls over a kept-alive HTTP/1.1 connection, 5 × 5,000 calls). The floor is the same version of `reqwest` posting a prebuilt body and parsing the response with `serde_json`.
 
-| Client | Per call | Above the floor |
+| Client | Per call, pass 1 / pass 2 |
+|---|---:|
+| floor | 53.0 / 53.3 µs |
+| instructors 2.0 | 53.9 / 52.7 µs |
+| instructors 1.5.1 | 55.2 / 53.9 µs |
+| rstructor 0.6.0 | 77.4 / 77.0 µs |
+| rig-core 0.47.1 (`output_schema`, then `serde_json::from_str`) | 80.6 / 80.6 µs |
+
+The floor itself varies by 0.3 µs and the instructors rows by 1.3 µs between passes, so 2.0 and the floor cannot be told apart here; 2.0 was 1.2 µs faster than 1.5.1 in both passes. For an Anthropic tool answer, 2.0 took 52.8 / 52.3 µs and 1.5.1 took 53.4 / 52.0 µs. For an answer streamed in 311 events with a partial value after each, 2.0 took 97.5 / 97.9 µs and 1.5.1 took 97.2 / 98.2 µs. Neither shows a difference. A real model call takes hundreds of milliseconds or more, so these times matter for CPU cost in large batches and in proxies.
+
+Without the network, building the request and parsing the answer of one OpenAI extraction takes 3.6 µs, of which building the request is 0.39 µs. The streaming partial parser takes 5.8 / 5.7 µs for the whole answer in 308 deltas of 4 bytes with a view after each; 1.5.1 took 5.7 / 5.6 µs. The parser source is the same in both versions.
+
+**The crate's JSON code against serde_json**, pass 1 / pass 2:
+
+| What | serde_json | instructors 2.0 |
 |---|---:|---:|
-| floor | 50.7 µs | |
-| instructors 1.5 | 53.0 µs | 2.3 µs |
-| instructors 1.4.1 (its own pass, floor 49.1 µs) | 66.4 µs | 17.3 µs |
-| rstructor 0.6.0 | 75.8 µs | 25.1 µs |
-| rig-core 0.47.1 (`output_schema`, then `serde_json::from_str`) | 79.1 µs | 28.4 µs |
+| content → `Invoice` | 1,562 / 1,563 ns | 1,346 / 1,372 ns |
+| OpenAI response body → `Invoice`, borrowed envelope | 4,057 / 4,101 ns | 2,954 / 2,977 ns |
+| Anthropic tool answer → `Invoice` | 3,057 / 3,058 ns | 2,497 / 2,496 ns |
+| one streamed chunk, envelope only | 231 / 229 ns | 184 / 185 ns |
+| write a 4,167-byte request into a reused buffer | 1,380 / 1,346 ns | 806 / 812 ns |
 
-A real model call takes hundreds of milliseconds or more, so these microseconds matter for CPU cost in large batches and in proxies, not for the latency of one call.
+**Repair**, input to repaired text, pass 1 / pass 2:
 
-**Schema work per request:**
+| Input | jsonrepair 0.1.0 | instructors 2.0 |
+|---|---:|---:|
+| valid JSON | 2.66 / 2.68 µs | 0.84 / 0.84 µs |
+| trailing commas | 7.79 / 7.66 µs | 2.90 / 2.90 µs |
+| single quotes | 6.39 / 6.05 µs | 3.18 / 3.22 µs |
+| markdown fence | 2.59 / 2.69 µs | 0.87 / 0.87 µs |
+| cut off at 2/3 of the length | 6.55 / 6.76 µs | 1.97 / 1.96 µs |
 
-| What | Time |
-|---|---:|
-| instructors 1.5: copy the cached, provider-ready schema bytes into the request body | 30 ns |
-| instructors 1.4.1: transform the cached schema for OpenAI, then serialize it | 10.8 µs + 1.1 µs |
-| rstructor 0.6.0: `Invoice::schema().to_json()` | 7.7 µs |
-| `schemars::schema_for!(Invoice)` without any cache, for scale | 3.8 µs |
+In both libraries the first four inputs deserialize into `Invoice` after the repair. The cut-off input does not, because required fields are missing; `accept_truncated` covers types whose missing fields are optional.
 
-**Partial values while streaming** (the 1,247-byte answer arriving in 308 deltas of 4 bytes, a partial value after every delta, total for the whole stream):
-
-| Approach | Whole stream |
-|---|---:|
-| instructors 1.5 `PartialParser`: feed each delta, read the borrowed view | 5.5 µs |
-| the same, plus a copy to `serde_json::Value` after every delta | 307 µs |
-| reparse the whole buffer after each delta into a `Value` (rstructor 0.6.0's method) | 677 µs |
-| partial-json-fixer 0.5.5 on the whole buffer, then parse | 735 µs |
-| jsonrepair 0.1.0 on the whole buffer, then parse | 2,035 µs |
-| for scale: one `serde_json::from_str::<Invoice>` of the finished answer | 1.6 µs |
-
-The parser does the same work no matter how the bytes are split, so the cost of a stream grows linearly with its length; the reparse approaches grow with the square of the length.
+**Crates in a build** (`cargo tree -e normal`, duplicates removed, the crate itself included, x86_64 Linux): 89 by default (1.5.1: 111), and 9 with `default-features = false, features = ["derive"]`, of which 7 are serde and what its derive uses. 1.5.1 without default features had 108.
 
 ## License
 

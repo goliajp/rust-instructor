@@ -1,25 +1,25 @@
 use std::sync::{Arc, Mutex};
 
-use instructors::{Client, Error, ImageInput, Validate, ValidationError};
-use schemars::JsonSchema;
+use instructors::{Client, Error, Part, Validate, ValidationError};
+use instructors::{RetryPolicy, Schema};
 use serde::Deserialize;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 enum Sentiment {
     Positive,
     Negative,
     Neutral,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct UserProfile {
     name: String,
     age: u32,
@@ -81,8 +81,8 @@ async fn extract_contact() {
     assert_eq!(result.value.email, Some("john@example.com".into()));
     assert_eq!(result.usage.input_tokens, 50);
     assert_eq!(result.usage.output_tokens, 20);
-    assert_eq!(result.usage.total_tokens, 70);
-    assert_eq!(result.usage.retries, 0);
+    assert_eq!(result.usage.total_tokens(), 70);
+    assert_eq!(result.usage.retries(), 0);
 }
 
 #[tokio::test]
@@ -149,12 +149,12 @@ async fn retry_on_invalid_json() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .max_retries(2)
+        .max_attempts(3)
         .await
         .unwrap();
 
     assert_eq!(result.value.name, "Fixed");
-    assert_eq!(result.usage.retries, 1);
+    assert_eq!(result.usage.retries(), 1);
     assert_eq!(result.usage.input_tokens, 100); // 50 * 2 attempts
 }
 
@@ -173,11 +173,11 @@ async fn exhaust_retries() {
     let client = Client::openai_compatible("key", server.uri());
     let err = client
         .extract::<Contact>("test")
-        .max_retries(1)
+        .max_attempts(2)
         .await
         .unwrap_err();
 
-    assert!(matches!(err, Error::ExtractionFailed { retries: 1, .. }));
+    assert!(matches!(err, Error::Parse { attempts: 2, .. }));
 }
 
 #[tokio::test]
@@ -191,11 +191,13 @@ async fn api_error_status() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri());
+    let client = Client::openai_compatible("key", server.uri()).with_retry(RetryPolicy::none());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
-        Error::Api { status, message } => {
+        Error::Api {
+            status, message, ..
+        } => {
             assert_eq!(status, 429);
             assert!(message.contains("rate limited"));
         }
@@ -216,7 +218,7 @@ async fn api_error_500() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri());
+    let client = Client::openai_compatible("key", server.uri()).with_retry(RetryPolicy::none());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -293,12 +295,12 @@ async fn closure_validation_retries() {
                 Ok(())
             }
         })
-        .max_retries(2)
+        .max_attempts(3)
         .await
         .unwrap();
 
     assert_eq!(result.value.age, 25);
-    assert_eq!(result.usage.retries, 1);
+    assert_eq!(result.usage.retries(), 1);
 }
 
 #[tokio::test]
@@ -343,11 +345,11 @@ async fn trait_validation_fails_exhausted() {
     let err = client
         .extract::<UserProfile>("someone old")
         .validated()
-        .max_retries(1)
+        .max_attempts(2)
         .await
         .unwrap_err();
 
-    assert!(matches!(err, Error::ValidationFailed { retries: 1, .. }));
+    assert!(matches!(err, Error::Validation { attempts: 2, .. }));
 }
 
 #[tokio::test]
@@ -474,7 +476,10 @@ async fn empty_choices_error() {
     let client = Client::openai_compatible("key", server.uri());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
-    assert!(matches!(err, Error::Other(_)));
+    // a malformed envelope is an api error carrying the http status
+    assert!(
+        matches!(err, Error::Api { status: 200, ref message, .. } if message.contains("no choices"))
+    );
 }
 
 #[tokio::test]
@@ -491,11 +496,11 @@ async fn zero_retries_no_retry() {
     let client = Client::openai_compatible("key", server.uri());
     let err = client
         .extract::<Contact>("test")
-        .max_retries(0)
+        .max_attempts(1)
         .await
         .unwrap_err();
 
-    assert!(matches!(err, Error::ExtractionFailed { retries: 0, .. }));
+    assert!(matches!(err, Error::Parse { attempts: 1, .. }));
 }
 
 #[tokio::test]
@@ -516,7 +521,7 @@ async fn client_with_defaults() {
         .with_model("gpt-5.6-luna")
         .with_system("extract data")
         .with_temperature(0.5)
-        .with_max_retries(0)
+        .with_max_attempts(1)
         .with_max_tokens(1024);
 
     let result = client.extract::<Contact>("test").await.unwrap();
@@ -540,7 +545,7 @@ async fn extract_with_image_url() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what animal is this?")
-        .image(ImageInput::Url("https://example.com/cat.jpg".into()))
+        .part(Part::ImageUrl("https://example.com/cat.jpg".into()))
         .await
         .unwrap();
 
@@ -564,7 +569,7 @@ async fn extract_with_image_base64() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what animal is this?")
-        .image(ImageInput::Base64 {
+        .part(Part::Image {
             media_type: "image/jpeg".into(),
             data: "dGVzdA==".into(),
         })
@@ -591,10 +596,8 @@ async fn extract_with_multiple_images() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("compare these images")
-        .images(vec![
-            ImageInput::Url("https://example.com/a.jpg".into()),
-            ImageInput::Url("https://example.com/b.jpg".into()),
-        ])
+        .part(Part::ImageUrl("https://example.com/a.jpg".into()))
+        .part(Part::ImageUrl("https://example.com/b.jpg".into()))
         .await
         .unwrap();
 
@@ -626,6 +629,7 @@ async fn fallback_to_second_provider() {
         .await;
 
     let client = Client::openai_compatible("key", primary.uri())
+        .with_retry(RetryPolicy::none())
         .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.extract::<Contact>("test").await.unwrap();
@@ -683,16 +687,29 @@ async fn fallback_chain_all_fail() {
         .await;
 
     let client = Client::openai_compatible("key", primary.uri())
-        .with_fallback(Client::openai_compatible("key2", fallback.uri()));
+        .with_retry(RetryPolicy::none())
+        .with_fallback(
+            Client::openai_compatible("key2", fallback.uri()).with_retry(RetryPolicy::none()),
+        );
 
     let err = client
         .extract::<Contact>("test")
-        .max_retries(0)
+        .max_attempts(1)
         .await
         .unwrap_err();
 
-    // should return the primary error
-    assert!(matches!(err, Error::Api { status: 500, .. }));
+    // every provider's error, the last one tried first
+    assert!(matches!(err, Error::Fallback { .. }));
+    let statuses: Vec<u16> = err
+        .chain()
+        .map(|e| match e {
+            Error::Api { status, .. } => *status,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(statuses, [503, 500]);
+    let source = std::error::Error::source(&err).unwrap().to_string();
+    assert!(source.contains("500"), "{source}");
 }
 
 fn openai_stream_chunks(json_content: &str) -> String {
@@ -748,7 +765,7 @@ async fn streaming_with_empty_data_lines() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .on_stream(|_| {})
+        .on_delta(|_| {})
         .await
         .unwrap();
 
@@ -785,7 +802,7 @@ async fn streaming_multibyte_utf8_split() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .on_stream(|_| {})
+        .on_delta(|_| {})
         .await
         .unwrap();
 
@@ -828,13 +845,15 @@ async fn fallback_retry_count_accumulates() {
 
     let result = client
         .extract::<Contact>("test")
-        .max_retries(1)
+        .max_attempts(2)
         .await
         .unwrap();
 
     assert_eq!(result.value.name, "OK");
-    // fallback had 1 retry
-    assert_eq!(result.usage.retries, 1);
+    // usage counts every answer: two from the primary, two from the fallback
+    assert_eq!(result.usage.requests, 4);
+    assert_eq!(result.usage.retries(), 3);
+    assert_eq!(result.usage.input_tokens, 200);
 }
 
 #[tokio::test]
@@ -861,7 +880,7 @@ async fn extract_with_streaming() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .on_stream(move |chunk| {
+        .on_delta(move |chunk| {
             chunks_clone.lock().unwrap().push(chunk.to_string());
         })
         .await
@@ -899,7 +918,7 @@ async fn json_repair_trailing_comma() {
 
     assert_eq!(result.value.name, "Alice");
     assert_eq!(result.value.email, Some("alice@test.com".into()));
-    assert_eq!(result.usage.retries, 0, "should not need a retry");
+    assert_eq!(result.usage.retries(), 0, "should not need a retry");
 }
 
 #[tokio::test]
@@ -921,7 +940,7 @@ async fn json_repair_single_quotes() {
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Bob");
-    assert_eq!(result.usage.retries, 0);
+    assert_eq!(result.usage.retries(), 0);
 }
 
 #[tokio::test]
@@ -942,7 +961,7 @@ async fn json_repair_markdown_fenced() {
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Carol");
-    assert_eq!(result.usage.retries, 0);
+    assert_eq!(result.usage.retries(), 0);
 }
 
 #[tokio::test]
@@ -964,5 +983,5 @@ async fn json_repair_unquoted_keys() {
     let result = client.extract::<Contact>("extract contact").await.unwrap();
 
     assert_eq!(result.value.name, "Dave");
-    assert_eq!(result.usage.retries, 0);
+    assert_eq!(result.usage.retries(), 0);
 }

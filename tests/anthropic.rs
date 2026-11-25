@@ -1,18 +1,18 @@
 use std::sync::{Arc, Mutex};
 
-use instructors::{Client, Error, ImageInput, Validate, ValidationError};
-use schemars::JsonSchema;
+use instructors::{Client, Error, Part, Validate, ValidationError};
+use instructors::{OutputMode, RetryPolicy, Schema};
 use serde::Deserialize;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct StrictContact {
     name: String,
     email: String,
@@ -67,7 +67,7 @@ async fn extract_contact() {
     assert_eq!(result.value.email, Some("alice@test.com".into()));
     assert_eq!(result.usage.input_tokens, 40);
     assert_eq!(result.usage.output_tokens, 15);
-    assert_eq!(result.usage.total_tokens, 55);
+    assert_eq!(result.usage.total_tokens(), 55);
 }
 
 #[tokio::test]
@@ -105,7 +105,9 @@ async fn api_error_401() {
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
-        Error::Api { status, message } => {
+        Error::Api {
+            status, message, ..
+        } => {
             assert_eq!(status, 401);
             assert!(message.contains("invalid api key"));
         }
@@ -126,7 +128,7 @@ async fn api_error_429() {
         .mount(&server)
         .await;
 
-    let client = Client::anthropic_compatible("key", server.uri());
+    let client = Client::anthropic_compatible("key", server.uri()).with_retry(RetryPolicy::none());
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
@@ -161,9 +163,14 @@ async fn no_tool_use_block() {
         .await;
 
     let client = Client::anthropic_compatible("key", server.uri());
-    let err = client.extract::<Contact>("test").await.unwrap_err();
+    let err = client
+        .extract::<Contact>("test")
+        .max_attempts(1)
+        .await
+        .unwrap_err();
 
-    assert!(matches!(err, Error::Other(_)));
+    // prose instead of a tool call is a parse failure, re-asked like any other
+    assert!(matches!(err, Error::Parse { ref raw, .. } if raw == "I cannot extract that"));
 }
 
 #[tokio::test]
@@ -225,12 +232,12 @@ async fn retry_on_bad_json_from_tool() {
     let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .max_retries(2)
+        .max_attempts(3)
         .await
         .unwrap();
 
     assert_eq!(result.value.name, "Fixed");
-    assert_eq!(result.usage.retries, 1);
+    assert_eq!(result.usage.retries(), 1);
 }
 
 #[tokio::test]
@@ -274,11 +281,11 @@ async fn trait_validation_fails_anthropic() {
     let err = client
         .extract::<StrictContact>("Bob")
         .validated()
-        .max_retries(1)
+        .max_attempts(2)
         .await
         .unwrap_err();
 
-    assert!(matches!(err, Error::ValidationFailed { retries: 1, .. }));
+    assert!(matches!(err, Error::Validation { attempts: 2, .. }));
 }
 
 #[tokio::test]
@@ -320,7 +327,7 @@ async fn extract_with_image_anthropic() {
     let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what animal is this?")
-        .image(ImageInput::Base64 {
+        .part(Part::Image {
             media_type: "image/png".into(),
             data: "dGVzdA==".into(),
         })
@@ -402,7 +409,7 @@ async fn extract_with_streaming_anthropic() {
     let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .on_stream(move |chunk| {
+        .on_delta(move |chunk| {
             chunks_clone.lock().unwrap().push(chunk.to_string());
         })
         .await
@@ -444,7 +451,7 @@ async fn streaming_multibyte_utf8_anthropic() {
     let client = Client::anthropic_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .on_stream(move |chunk| {
+        .on_delta(move |chunk| {
             chunks_clone.lock().unwrap().push(chunk.to_string());
         })
         .await
@@ -482,13 +489,16 @@ async fn cross_provider_fallback_openai_to_anthropic() {
         .mount(&anthropic_server)
         .await;
 
-    let client = Client::openai_compatible("key", openai_server.uri()).with_fallback(
-        Client::anthropic_compatible("ant-key", anthropic_server.uri()),
-    );
+    let client = Client::openai_compatible("key", openai_server.uri())
+        .with_retry(RetryPolicy::none())
+        .with_fallback(Client::anthropic_compatible(
+            "ant-key",
+            anthropic_server.uri(),
+        ));
 
     let result = client
         .extract::<Contact>("test")
-        .max_retries(0)
+        .max_attempts(1)
         .await
         .unwrap();
 
@@ -528,7 +538,7 @@ async fn structured_output_sends_output_config() {
         .await;
 
     let client =
-        Client::anthropic_compatible("key", server.uri()).with_anthropic_structured_output();
+        Client::anthropic_compatible("key", server.uri()).with_output_mode(OutputMode::Schema);
     let result = client.extract::<Contact>("test").await.unwrap();
 
     assert_eq!(result.value.name, "Native");
@@ -612,10 +622,10 @@ async fn structured_output_streams_text_deltas() {
     let chunks_clone = chunks.clone();
 
     let client =
-        Client::anthropic_compatible("key", server.uri()).with_anthropic_structured_output();
+        Client::anthropic_compatible("key", server.uri()).with_output_mode(OutputMode::Schema);
     let result = client
         .extract::<Contact>("test")
-        .on_stream(move |chunk| {
+        .on_delta(move |chunk| {
             chunks_clone.lock().unwrap().push(chunk.to_string());
         })
         .await
@@ -641,8 +651,13 @@ async fn structured_output_without_text_block_errors() {
         .await;
 
     let client =
-        Client::anthropic_compatible("key", server.uri()).with_anthropic_structured_output();
-    let err = client.extract::<Contact>("test").await.unwrap_err();
+        Client::anthropic_compatible("key", server.uri()).with_output_mode(OutputMode::Schema);
+    let err = client
+        .extract::<Contact>("test")
+        .max_attempts(1)
+        .await
+        .unwrap_err();
 
-    assert!(matches!(err, Error::Other(_)));
+    // no text block means an empty answer, which does not parse
+    assert!(matches!(err, Error::Parse { ref raw, .. } if raw.is_empty()));
 }

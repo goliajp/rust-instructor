@@ -7,7 +7,7 @@
 
 use instructors::prelude::*;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Entity {
     /// The entity name
     name: String,
@@ -16,7 +16,7 @@ struct Entity {
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let client = Client::openai(&api_key).with_model("gpt-5.6-luna");
 

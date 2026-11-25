@@ -1,323 +1,171 @@
-use std::marker::PhantomData;
+use std::future::IntoFuture;
+use std::sync::Arc;
 use std::time::Duration;
 
-use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
-use crate::backoff::BackoffConfig;
-use crate::client::{Client, ExtractResult};
+use crate::client::Client;
+use crate::drive::batch::ordered;
 use crate::error::Result;
-use crate::extract::ValidatorFn;
+use crate::exchange::{Extracted, Validator};
+use crate::extract::Extract;
 use crate::reasoning::Reasoning;
+use crate::schema::Schema;
+use crate::transport::BoxFuture;
 use crate::validate::ValidationError;
 
-/// Builder for concurrent batch extraction.
+/// Many prompts, each extracted into a `T`, with bounded concurrency.
+/// Results come back in prompt order.
 ///
-/// Created by [`Client::extract_batch`]. Processes multiple prompts concurrently
-/// with configurable concurrency limits.
-pub struct BatchBuilder<'a, T> {
+/// ```rust,no_run
+/// use instructors::prelude::*;
+///
+/// #[derive(Deserialize, Schema)]
+/// struct Contact { name: String }
+///
+/// # async fn run() {
+/// let client = Client::openai("sk-...");
+/// let results = client
+///     .extract_batch::<Contact>(vec!["John Doe".into(), "Jane Smith".into()])
+///     .concurrency(5)
+///     .await;
+/// for r in results {
+///     match r {
+///         Ok(c) => println!("{}", c.value.name),
+///         Err(e) => eprintln!("{e}"),
+///     }
+/// }
+/// # }
+/// ```
+#[must_use = "a batch does nothing until it is awaited"]
+pub struct Batch<'a, T> {
     client: &'a Client,
     prompts: Vec<String>,
+    concurrency: usize,
     model: Option<String>,
     system: Option<String>,
     temperature: Option<f64>,
     max_tokens: Option<u32>,
-    max_retries: u32,
     reasoning: Option<Reasoning>,
-    concurrency: usize,
-    backoff: Option<BackoffConfig>,
-    timeout: Duration,
-    validator: Option<ValidatorFn<T>>,
-    _phantom: PhantomData<T>,
+    max_attempts: Option<u32>,
+    timeout: Option<Duration>,
+    validator: Option<Validator<T>>,
 }
 
-impl<'a, T> BatchBuilder<'a, T>
-where
-    T: DeserializeOwned + JsonSchema + Send + Sync + 'static,
-{
+impl<'a, T> Batch<'a, T> {
     pub(crate) fn new(client: &'a Client, prompts: Vec<String>) -> Self {
         Self {
             client,
             prompts,
-            model: client.default_model.clone(),
-            system: client.default_system.clone(),
-            temperature: client.default_temperature,
-            max_tokens: client.default_max_tokens,
-            max_retries: client.default_max_retries,
-            reasoning: client.default_reasoning,
             concurrency: 5,
-            backoff: client.default_backoff.clone(),
-            timeout: client.default_timeout,
+            model: None,
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            reasoning: None,
+            max_attempts: None,
+            timeout: None,
             validator: None,
-            _phantom: PhantomData,
         }
-    }
-
-    /// Set the model for all extractions in the batch.
-    pub fn model(self, model: impl Into<String>) -> Self {
-        Self {
-            model: Some(model.into()),
-            ..self
-        }
-    }
-
-    /// Set the system prompt for all extractions.
-    pub fn system(self, system: impl Into<String>) -> Self {
-        Self {
-            system: Some(system.into()),
-            ..self
-        }
-    }
-
-    /// Set the temperature for all extractions.
-    ///
-    /// Not sent to Anthropic. The current Claude generations reject a
-    /// non-default `temperature` with a 400, so the Anthropic request never
-    /// carries it and this setting has no effect there. Sent to the OpenAI and
-    /// Gemini families as usual.
-    pub fn temperature(self, temp: f64) -> Self {
-        Self {
-            temperature: Some(temp),
-            ..self
-        }
-    }
-
-    /// Set max output tokens for each extraction.
-    pub fn max_tokens(self, tokens: u32) -> Self {
-        Self {
-            max_tokens: Some(tokens),
-            ..self
-        }
-    }
-
-    /// Set the reasoning level for each extraction. See [`Reasoning`].
-    pub fn reasoning(self, reasoning: Reasoning) -> Self {
-        Self {
-            reasoning: Some(reasoning),
-            ..self
-        }
-    }
-
-    /// Set max retries per extraction.
-    pub fn max_retries(self, retries: u32) -> Self {
-        Self {
-            max_retries: retries,
-            ..self
-        }
-    }
-
-    /// Set the maximum number of concurrent requests.
-    ///
-    /// Default is 5. Higher values increase throughput but may trigger rate limits.
-    pub fn concurrency(self, n: usize) -> Self {
-        Self {
-            concurrency: n.max(1),
-            ..self
-        }
-    }
-
-    /// Enable exponential backoff for retryable HTTP errors.
-    pub fn retry_backoff(self, config: BackoffConfig) -> Self {
-        Self {
-            backoff: Some(config),
-            ..self
-        }
-    }
-
-    /// Set the overall request timeout per extraction.
-    pub fn timeout(self, timeout: Duration) -> Self {
-        Self { timeout, ..self }
-    }
-
-    /// Add a validation function applied to each extraction.
-    pub fn validate<F>(self, f: F) -> Self
-    where
-        F: Fn(&T) -> std::result::Result<(), ValidationError> + Send + Sync + 'static,
-    {
-        Self {
-            validator: Some(Box::new(f)),
-            ..self
-        }
-    }
-
-    /// Execute the batch, returning results in the same order as prompts.
-    ///
-    /// Each element is `Result<ExtractResult<T>>` — individual extractions
-    /// can fail independently without affecting others.
-    pub async fn run(self) -> Vec<Result<ExtractResult<T>>> {
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency));
-        let client = self.client;
-        let model = self.model;
-        let system = self.system;
-        let temperature = self.temperature;
-        let max_tokens = self.max_tokens;
-        let max_retries = self.max_retries;
-        let reasoning = self.reasoning;
-        let backoff = self.backoff;
-        let timeout = self.timeout;
-        let validator = self.validator.map(std::sync::Arc::new);
-
-        let handles: Vec<_> = self
-            .prompts
-            .into_iter()
-            .map(|prompt| {
-                let sem = semaphore.clone();
-                let model = model.clone();
-                let system = system.clone();
-                let validator = validator.clone();
-                let backoff = backoff.clone();
-
-                async move {
-                    let _permit: tokio::sync::OwnedSemaphorePermit = sem
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| crate::error::Error::Other("semaphore closed".into()))?;
-                    let mut builder = client.extract::<T>(prompt);
-                    if let Some(m) = model {
-                        builder = builder.model(m);
-                    }
-                    if let Some(s) = system {
-                        builder = builder.system(s);
-                    }
-                    if let Some(t) = temperature {
-                        builder = builder.temperature(t);
-                    }
-                    if let Some(n) = max_tokens {
-                        builder = builder.max_tokens(n);
-                    }
-                    if let Some(r) = reasoning {
-                        builder = builder.reasoning(r);
-                    }
-                    builder = builder.max_retries(max_retries).timeout(timeout);
-                    if let Some(b) = backoff {
-                        builder = builder.retry_backoff(b);
-                    }
-                    if let Some(v) = validator {
-                        builder = builder.validate(move |val: &T| v(val));
-                    }
-                    builder.await
-                }
-            })
-            .collect();
-
-        // run all concurrently, preserving order
-        futures::future::join_all(handles).await
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builder_inherits_client_defaults() {
-        let client = Client::openai("key")
-            .with_model("gpt-5.6-luna")
-            .with_system("extract data")
-            .with_temperature(0.5)
-            .with_max_retries(5)
-            .with_max_tokens(2048);
-
-        #[expect(dead_code, reason = "fields are only filled by deserialization")]
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct D {
-            x: i32,
-        }
-
-        let builder = BatchBuilder::<D>::new(&client, vec!["a".into(), "b".into()]);
-        assert_eq!(builder.concurrency, 5);
-        assert_eq!(builder.max_retries, 5);
-        assert_eq!(builder.max_tokens, Some(2048));
-        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
-        assert_eq!(builder.system.as_deref(), Some("extract data"));
-        assert_eq!(builder.temperature, Some(0.5));
-        assert!(builder.validator.is_none());
-        assert_eq!(builder.prompts.len(), 2);
+impl<'a, T: DeserializeOwned + Schema + Send + 'a> Batch<'a, T> {
+    /// Requests in flight at once. Default 5.
+    pub fn concurrency(mut self, n: usize) -> Self {
+        self.concurrency = n.max(1);
+        self
     }
 
-    #[test]
-    fn builder_defaults_without_client_overrides() {
-        let client = Client::openai("key");
-
-        #[expect(dead_code, reason = "fields are only filled by deserialization")]
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct D {
-            x: i32,
-        }
-
-        let builder = BatchBuilder::<D>::new(&client, vec!["a".into()]);
-        // inherits client defaults
-        assert_eq!(builder.max_retries, 2);
-        assert_eq!(builder.max_tokens, None);
-        assert_eq!(builder.temperature, Some(0.0));
-        assert!(builder.model.is_none());
-        assert!(builder.system.is_none());
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
     }
 
-    #[test]
-    fn builder_overrides() {
-        let client = Client::openai("key");
-
-        #[expect(dead_code, reason = "fields are only filled by deserialization")]
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct D {
-            x: i32,
-        }
-
-        let builder = BatchBuilder::<D>::new(&client, vec!["a".into()])
-            .model("gpt-5.6-luna")
-            .system("test")
-            .temperature(0.5)
-            .max_tokens(1024)
-            .max_retries(3)
-            .concurrency(10);
-
-        assert_eq!(builder.model.as_deref(), Some("gpt-5.6-luna"));
-        assert_eq!(builder.system.as_deref(), Some("test"));
-        assert_eq!(builder.temperature, Some(0.5));
-        assert_eq!(builder.max_tokens, Some(1024));
-        assert_eq!(builder.max_retries, 3);
-        assert_eq!(builder.concurrency, 10);
+    pub fn system(mut self, system: impl Into<String>) -> Self {
+        self.system = Some(system.into());
+        self
     }
 
-    #[test]
-    fn concurrency_minimum_one() {
-        let client = Client::openai("key");
-
-        #[expect(dead_code, reason = "fields are only filled by deserialization")]
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct D {
-            x: i32,
-        }
-
-        let builder = BatchBuilder::<D>::new(&client, vec![]).concurrency(0);
-        assert_eq!(builder.concurrency, 1);
+    pub fn temperature(mut self, t: f64) -> Self {
+        self.temperature = Some(t);
+        self
     }
 
-    #[test]
-    fn builder_backoff_and_timeout() {
-        let client = Client::openai("key")
-            .with_retry_backoff(BackoffConfig::default())
-            .with_timeout(Duration::from_secs(30));
+    pub fn max_tokens(mut self, n: u32) -> Self {
+        self.max_tokens = Some(n);
+        self
+    }
 
-        #[expect(dead_code, reason = "fields are only filled by deserialization")]
-        #[derive(serde::Deserialize, JsonSchema)]
-        struct D {
-            x: i32,
+    pub fn reasoning(mut self, r: Reasoning) -> Self {
+        self.reasoning = Some(r);
+        self
+    }
+
+    pub fn max_attempts(mut self, n: u32) -> Self {
+        self.max_attempts = Some(n);
+        self
+    }
+
+    /// The timeout of each extraction.
+    pub fn timeout(mut self, d: Duration) -> Self {
+        self.timeout = Some(d);
+        self
+    }
+
+    pub fn validate<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&T) -> std::result::Result<(), ValidationError> + Send + Sync + 'static,
+    {
+        self.validator = Some(Arc::new(f));
+        self
+    }
+
+    fn one(&self, prompt: String) -> Extract<'a, T> {
+        let mut e = self.client.extract::<T>(prompt);
+        if let Some(m) = &self.model {
+            e = e.model(m.clone());
         }
+        if let Some(s) = &self.system {
+            e = e.system(s.clone());
+        }
+        if let Some(t) = self.temperature {
+            e = e.temperature(t);
+        }
+        if let Some(n) = self.max_tokens {
+            e = e.max_tokens(n);
+        }
+        if let Some(r) = self.reasoning {
+            e = e.reasoning(r);
+        }
+        if let Some(n) = self.max_attempts {
+            e = e.max_attempts(n);
+        }
+        if let Some(d) = self.timeout {
+            e = e.timeout(d);
+        }
+        if let Some(v) = &self.validator {
+            e = e.validator(v.clone());
+        }
+        e
+    }
 
-        let builder = BatchBuilder::<D>::new(&client, vec!["a".into()]);
-        assert!(builder.backoff.is_some());
-        assert_eq!(builder.timeout, Duration::from_secs(30));
+    /// Run every prompt; one result per prompt, in order.
+    pub async fn run(mut self) -> Vec<Result<Extracted<T>>> {
+        let prompts = std::mem::take(&mut self.prompts);
+        let futs: Vec<BoxFuture<'a, Result<Extracted<T>>>> = prompts
+            .into_iter()
+            .map(|p| self.one(p).into_future())
+            .collect();
+        ordered(futs, self.concurrency).await
+    }
+}
 
-        // per-batch override
-        let builder = builder
-            .retry_backoff(BackoffConfig {
-                max_http_retries: 5,
-                ..Default::default()
-            })
-            .timeout(Duration::from_secs(90));
-        assert_eq!(builder.backoff.as_ref().unwrap().max_http_retries, 5);
-        assert_eq!(builder.timeout, Duration::from_secs(90));
+impl<'a, T: DeserializeOwned + Schema + Send + 'a> IntoFuture for Batch<'a, T> {
+    type Output = Vec<Result<Extracted<T>>>;
+    type IntoFuture = BoxFuture<'a, Self::Output>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.run())
     }
 }
