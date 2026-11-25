@@ -7,7 +7,7 @@
 use instructors::prelude::*;
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct ImageDescription {
     subject: String,
     colors: Vec<String>,
@@ -15,14 +15,14 @@ struct ImageDescription {
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY");
     let client = Client::openai(&api_key);
 
     let result = client
         .extract::<ImageDescription>("Describe this image in detail")
         .model("gpt-5.6-terra")
-        .image(ImageInput::Url(
+        .part(Part::ImageUrl(
             "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Rust_programming_language_black_logo.svg/240px-Rust_programming_language_black_logo.svg.png".into(),
         ))
         .await?;

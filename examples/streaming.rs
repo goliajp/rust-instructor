@@ -7,14 +7,14 @@
 use instructors::prelude::*;
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Summary {
     title: String,
     key_points: Vec<String>,
 }
 
 #[tokio::main]
-async fn main() -> instructors::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY");
     let client = Client::openai(&api_key);
 

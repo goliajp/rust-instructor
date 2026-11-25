@@ -1,11 +1,13 @@
-use instructors::{BackoffConfig, Client, Error};
-use schemars::JsonSchema;
+use std::time::{Duration, Instant};
+
+use instructors::{Client, Error};
+use instructors::{RetryPolicy, Schema};
 use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
@@ -54,12 +56,12 @@ async fn retry_429_with_backoff() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-        base_delay: std::time::Duration::from_millis(10),
-        max_http_retries: 3,
-        jitter: false,
-        ..Default::default()
-    });
+    let client = Client::openai_compatible("key", server.uri()).with_retry(
+        RetryPolicy::new()
+            .base_delay(std::time::Duration::from_millis(10))
+            .max_retries(3)
+            .jitter(false),
+    );
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "John");
@@ -87,12 +89,12 @@ async fn retry_503_with_backoff() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-        base_delay: std::time::Duration::from_millis(10),
-        max_http_retries: 3,
-        jitter: false,
-        ..Default::default()
-    });
+    let client = Client::openai_compatible("key", server.uri()).with_retry(
+        RetryPolicy::new()
+            .base_delay(std::time::Duration::from_millis(10))
+            .max_retries(3)
+            .jitter(false),
+    );
 
     let result = client.extract::<Contact>("test").await.unwrap();
     assert_eq!(result.value.name, "Jane");
@@ -109,12 +111,12 @@ async fn no_retry_400() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-        base_delay: std::time::Duration::from_millis(10),
-        max_http_retries: 3,
-        jitter: false,
-        ..Default::default()
-    });
+    let client = Client::openai_compatible("key", server.uri()).with_retry(
+        RetryPolicy::new()
+            .base_delay(std::time::Duration::from_millis(10))
+            .max_retries(3)
+            .jitter(false),
+    );
 
     let err = client.extract::<Contact>("test").await.unwrap_err();
     match err {
@@ -134,12 +136,12 @@ async fn no_retry_401() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-        base_delay: std::time::Duration::from_millis(10),
-        max_http_retries: 3,
-        jitter: false,
-        ..Default::default()
-    });
+    let client = Client::openai_compatible("key", server.uri()).with_retry(
+        RetryPolicy::new()
+            .base_delay(std::time::Duration::from_millis(10))
+            .max_retries(3)
+            .jitter(false),
+    );
 
     let err = client.extract::<Contact>("test").await.unwrap_err();
     match err {
@@ -172,12 +174,12 @@ async fn exhaust_http_retries_then_fallback() {
         .await;
 
     let client = Client::openai_compatible("key", primary.uri())
-        .with_retry_backoff(BackoffConfig {
-            base_delay: std::time::Duration::from_millis(10),
-            max_http_retries: 2,
-            jitter: false,
-            ..Default::default()
-        })
+        .with_retry(
+            RetryPolicy::new()
+                .base_delay(std::time::Duration::from_millis(10))
+                .max_retries(2)
+                .jitter(false),
+        )
         .with_fallback(Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.extract::<Contact>("test").await.unwrap();
@@ -217,27 +219,57 @@ async fn backoff_with_parse_retry() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri()).with_retry_backoff(BackoffConfig {
-        base_delay: std::time::Duration::from_millis(10),
-        max_http_retries: 2,
-        jitter: false,
-        ..Default::default()
-    });
+    let client = Client::openai_compatible("key", server.uri()).with_retry(
+        RetryPolicy::new()
+            .base_delay(std::time::Duration::from_millis(10))
+            .max_retries(2)
+            .jitter(false),
+    );
 
     let result = client
         .extract::<Contact>("test")
-        .max_retries(2)
+        .max_attempts(3)
         .await
         .unwrap();
     assert_eq!(result.value.name, "OK");
-    assert_eq!(result.usage.retries, 1); // one parse retry
+    assert_eq!(result.usage.retries(), 1); // one parse retry
 }
 
 #[tokio::test]
-async fn no_backoff_by_default() {
+async fn retry_is_on_by_default() {
     let server = MockServer::start().await;
 
-    // 429 should fail immediately without backoff configured
+    // `retry-after: 0` keeps the default policy's waits at zero
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string("rate limited"),
+        )
+        .expect(4)
+        .mount(&server)
+        .await;
+
+    let client = Client::openai_compatible("key", server.uri());
+    let err = client.extract::<Contact>("test").await.unwrap_err();
+    match err {
+        Error::Api {
+            status,
+            retry_after,
+            ..
+        } => {
+            assert_eq!(status, 429);
+            assert_eq!(retry_after, Some(Duration::ZERO));
+        }
+        _ => panic!("expected Api error"),
+    }
+}
+
+#[tokio::test]
+async fn retry_none_fails_at_once() {
+    let server = MockServer::start().await;
+
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
@@ -245,10 +277,49 @@ async fn no_backoff_by_default() {
         .mount(&server)
         .await;
 
-    let client = Client::openai_compatible("key", server.uri());
+    let client = Client::openai_compatible("key", server.uri()).with_retry(RetryPolicy::none());
     let err = client.extract::<Contact>("test").await.unwrap_err();
-    match err {
-        Error::Api { status, .. } => assert_eq!(status, 429),
-        _ => panic!("expected Api error"),
-    }
+    assert!(matches!(err, Error::Api { status: 429, .. }));
+}
+
+#[tokio::test]
+async fn retry_after_is_honoured() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .insert_header("retry-after-ms", "300")
+                .set_body_string("busy"),
+        )
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(openai_response(r#"{"name": "Late", "email": null}"#)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // the computed delay would be 1 ms; the server's 300 ms wins
+    let client = Client::openai_compatible("key", server.uri()).with_retry(
+        RetryPolicy::new()
+            .base_delay(Duration::from_millis(1))
+            .jitter(false),
+    );
+    let start = Instant::now();
+    let result = client.extract::<Contact>("test").await.unwrap();
+    assert_eq!(result.value.name, "Late");
+    assert!(
+        start.elapsed() >= Duration::from_millis(250),
+        "{:?}",
+        start.elapsed()
+    );
 }

@@ -37,13 +37,21 @@ impl Reply {
     }
 }
 
+type Entry = (String, serde_json::Value, String);
+
 #[derive(Clone, Default)]
-pub struct Log(Arc<Mutex<Vec<(String, serde_json::Value)>>>);
+pub struct Log(Arc<Mutex<Vec<Entry>>>);
 
 impl Log {
     /// (request target, parsed body) for every request so far.
     pub fn requests(&self) -> Vec<(String, serde_json::Value)> {
-        self.0.lock().unwrap().clone()
+        let log = self.0.lock().unwrap();
+        log.iter().map(|(t, v, _)| (t.clone(), v.clone())).collect()
+    }
+
+    /// The body of request `i` as sent, keys in their original order.
+    pub fn raw(&self, i: usize) -> String {
+        self.0.lock().unwrap()[i].2.clone()
     }
 
     pub fn body(&self, i: usize) -> serde_json::Value {
@@ -90,7 +98,8 @@ async fn handle(sock: tokio::net::TcpStream, log: Log, replies: Arc<Vec<Reply>>)
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf).await.unwrap();
         let body = serde_json::from_slice(&buf).unwrap_or(serde_json::Value::Null);
-        log.0.lock().unwrap().push((target.clone(), body));
+        let raw = String::from_utf8_lossy(&buf).into_owned();
+        log.0.lock().unwrap().push((target.clone(), body, raw));
         let reply = replies
             .iter()
             .find(|rep| target.contains(rep.path_contains))

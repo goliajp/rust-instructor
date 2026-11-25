@@ -1,40 +1,40 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use instructors::{Client, Message, Validate, ValidationError};
-use schemars::JsonSchema;
+use instructors::Schema;
+use instructors::{Client, Message, Part, Role, Validate, ValidationError};
 use serde::Deserialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
 }
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Entity {
     name: String,
     entity_type: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Summary {
     text: String,
 }
 
 #[expect(dead_code, reason = "fields are only filled by deserialization")]
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 enum Sentiment {
     Positive,
     Negative,
     Neutral,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Classification {
     category: String,
     confidence: f64,
@@ -140,12 +140,12 @@ async fn message_history() {
 #[tokio::test]
 async fn message_constructors() {
     let user = Message::user("hello");
-    assert_eq!(user.role, "user");
-    assert_eq!(user.content, "hello");
+    assert_eq!(user.role(), Role::User);
+    assert_eq!(user.parts(), [Part::Text("hello".into())]);
 
     let assistant = Message::assistant("hi there");
-    assert_eq!(assistant.role, "assistant");
-    assert_eq!(assistant.content, "hi there");
+    assert_eq!(assistant.role(), Role::Assistant);
+    assert_eq!(assistant.parts(), [Part::Text("hi there".into())]);
 }
 
 // -- hooks tests --
@@ -170,7 +170,9 @@ async fn on_request_hook() {
     let client = Client::openai_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test prompt")
-        .on_request(move |_model, _prompt| {
+        .on_request(move |req| {
+            assert!(req.url.ends_with("/chat/completions"));
+            assert!(String::from_utf8_lossy(&req.body).contains("test prompt"));
             count.fetch_add(1, Ordering::SeqCst);
         })
         .await
@@ -194,14 +196,14 @@ async fn on_response_hook() {
         .mount(&server)
         .await;
 
-    let total_tokens = Arc::new(AtomicU32::new(0));
+    let total_tokens = Arc::new(AtomicU64::new(0));
     let tokens = total_tokens.clone();
 
     let client = Client::openai_compatible("key", server.uri());
     let _ = client
         .extract::<Contact>("test")
         .on_response(move |usage| {
-            tokens.store(usage.total_tokens, Ordering::SeqCst);
+            tokens.store(usage.total_tokens(), Ordering::SeqCst);
         })
         .await
         .unwrap();
@@ -238,8 +240,8 @@ async fn hooks_called_on_retry() {
     let client = Client::openai_compatible("key", server.uri());
     let _ = client
         .extract::<Contact>("test")
-        .max_retries(1)
-        .on_request(move |_, _| {
+        .max_attempts(2)
+        .on_request(move |_| {
             count.fetch_add(1, Ordering::SeqCst);
         })
         .await

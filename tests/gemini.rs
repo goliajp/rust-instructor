@@ -1,10 +1,10 @@
-use instructors::{Client, Error, ImageInput};
-use schemars::JsonSchema;
+use instructors::Schema;
+use instructors::{Client, Error, Part};
 use serde::Deserialize;
 use wiremock::matchers::{header, method, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Schema)]
 struct Contact {
     name: String,
     email: Option<String>,
@@ -100,12 +100,12 @@ async fn retry_on_invalid_json() {
     let client = Client::gemini_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("test")
-        .max_retries(2)
+        .max_attempts(3)
         .await
         .unwrap();
 
     assert_eq!(result.value.name, "Fixed");
-    assert_eq!(result.usage.retries, 1);
+    assert_eq!(result.usage.retries(), 1);
 }
 
 #[tokio::test]
@@ -123,7 +123,9 @@ async fn api_error_status() {
     let err = client.extract::<Contact>("test").await.unwrap_err();
 
     match err {
-        Error::Api { status, message } => {
+        Error::Api {
+            status, message, ..
+        } => {
             assert_eq!(status, 400);
             assert!(message.contains("bad request"));
         }
@@ -172,7 +174,7 @@ async fn extract_with_streaming() {
 
     let result = client
         .extract::<Contact>("test")
-        .on_stream(move |chunk| {
+        .on_delta(move |chunk| {
             chunks_clone.lock().unwrap().push(chunk.to_string());
         })
         .await
@@ -200,7 +202,7 @@ async fn extract_with_image() {
     let client = Client::gemini_compatible("key", server.uri());
     let result = client
         .extract::<Contact>("what is this?")
-        .image(ImageInput::Base64 {
+        .part(Part::Image {
             media_type: "image/jpeg".into(),
             data: "dGVzdA==".into(),
         })
