@@ -43,7 +43,7 @@ schemars = ["dep:schemars", "serde_json"]
 preserve-order = []
 
 [dev-dependencies]
-instructors-derive = { path = "derive" }
+instructors-derive = { version = "=1.5.1", path = "derive" }
 # the previous release, for request differential tests
 instructors_1 = { package = "instructors", version = "=1.5.1" }
 serde_json = "1"
