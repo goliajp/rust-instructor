@@ -293,16 +293,6 @@ Cost comes from the [tiktoken](https://crates.io/crates/tiktoken) price table (f
 instructors = { version = "2", default-features = false, features = ["derive", "reqwest"] } # no cost tracking
 ```
 
-## Field order
-
-By default the schema lists a struct's fields in alphabetical order, because schemars stores properties in a `serde_json::Map`, which is sorted unless `serde_json/preserve_order` is enabled. OpenAI generates fields in the order the schema lists them, so a `reasoning` field declared before `answer` is written after it. The `preserve-order` feature keeps declaration order for every provider:
-
-```toml
-instructors = { version = "1", features = ["preserve-order"] }
-```
-
-It turns on `serde_json/preserve_order`, which applies to every crate in your build that uses `serde_json::Map`: their maps keep insertion order instead of sorting, and `indexmap` is added to the build.
-
 ## Performance
 
 PERF_SECTION
