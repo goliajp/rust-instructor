@@ -161,7 +161,7 @@ let all: Vec<Entity> = client
 
 | Situation | What you get |
 |---|---|
-| The provider returned a non-2xx status after the HTTP retries | `Error::Api { status, message, retry_after, .. }` |
+| The provider returned a non-2xx status after the HTTP retries, or sent an error inside the stream | `Error::Api { status, message, retry_after, .. }` |
 | The connection failed | `Error::Transport { source, .. }` |
 | The answer did not parse, or failed validation, on every attempt | `Error::Parse { attempts, raw, .. }` or `Error::Validation { .. }` |
 | The model refused (OpenAI `refusal`, Anthropic `stop_reason: refusal`, Gemini safety stop) | `Error::Refusal { text, .. }`; not retried |

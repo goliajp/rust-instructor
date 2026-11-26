@@ -51,7 +51,10 @@ pub(crate) fn build(base: &J, dialect: Dialect) -> Box<str> {
             });
             v
         }
-        Dialect::GeminiJson => v,
+        Dialect::GeminiJson => {
+            walk(&mut v, &mut const_to_enum);
+            v
+        }
     };
     let mut out = Vec::with_capacity(512);
     write(&v, &mut out);
@@ -72,6 +75,17 @@ fn close_object(m: &mut Map) {
     let keys = props.iter().map(|(k, _)| s(k)).collect();
     set(m, "required", J::Arr(keys));
     set(m, "additionalProperties", J::Bool(false));
+}
+
+// gemini's subset has `enum` but not `const`, and ignores what it does not
+// support, which would drop the tag of a tagged enum
+fn const_to_enum(m: &mut Map) {
+    if get(m, "enum").is_none()
+        && let Some(i) = m.iter().position(|(k, _)| k == "const")
+    {
+        let (_, value) = m.remove(i);
+        m.insert(i, ("enum".into(), J::Arr(vec![value])));
+    }
 }
 
 fn one_of_to_any_of(m: &mut Map) {

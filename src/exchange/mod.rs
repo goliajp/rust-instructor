@@ -390,7 +390,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                     usage: Box::default(),
                 }
             }
-            Fail::Malformed(message) => Error::Api {
+            Fail::Malformed(message) | Fail::Api(message) => Error::Api {
                 provider,
                 status,
                 message,

@@ -4,46 +4,18 @@ use std::borrow::Cow;
 
 use serde::Deserialize;
 
+mod content;
+
 use super::{
     Answer, Arr, DEFAULT_SYSTEM, Fail, HttpRequest, Obj, OutputMode, Provider, Req, Stop, envelope,
     json_headers, system_with_schema, type_obj,
 };
-use crate::message::{Part, Role};
+use crate::json::Raw;
+use crate::message::Role;
 use crate::reasoning::Reasoning;
 use crate::schema::Dialect;
 use crate::usage::Usage;
-
-fn content(out: &mut Vec<u8>, role: Role, parts: &[Part]) {
-    let mut a = Arr::new(out);
-    for p in parts {
-        let mut o = Obj::new(a.item());
-        match (role, p) {
-            (Role::Assistant, Part::Text(t)) => {
-                o.str("type", "output_text");
-                o.str("text", t);
-            }
-            (_, Part::Text(t)) => {
-                o.str("type", "input_text");
-                o.str("text", t);
-            }
-            (_, Part::ImageUrl(u)) => {
-                o.str("type", "input_image");
-                o.str("image_url", u);
-            }
-            (_, Part::Image { media_type, data }) => {
-                o.str("type", "input_image");
-                o.str("image_url", &format!("data:{media_type};base64,{data}"));
-            }
-            (_, Part::Document { media_type, data }) => {
-                o.str("type", "input_file");
-                o.str("filename", "document.pdf");
-                o.str("file_data", &format!("data:{media_type};base64,{data}"));
-            }
-        }
-        o.end();
-    }
-    a.end();
-}
+use content::content;
 
 pub(crate) fn request(p: &Provider, r: &Req<'_>) -> Result<HttpRequest, Fail> {
     if r.mode == OutputMode::Tool {
@@ -144,6 +116,8 @@ struct Details {
     #[serde(default)]
     cached_tokens: u64,
     #[serde(default)]
+    cache_write_tokens: u64,
+    #[serde(default)]
     reasoning_tokens: u64,
 }
 
@@ -157,6 +131,8 @@ struct Response<'a> {
     output: Vec<Item<'a>>,
     #[serde(default)]
     usage: Option<UsageIn>,
+    #[serde(default, borrow)]
+    error: Option<Raw<'a>>,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +166,10 @@ fn to_usage(u: &UsageIn) -> Usage {
             .input_tokens_details
             .as_ref()
             .map_or(0, |d| d.cached_tokens),
+        cache_write_tokens: u
+            .input_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.cache_write_tokens),
         output_tokens: u.output_tokens,
         reasoning_tokens: u
             .output_tokens_details
@@ -201,6 +181,10 @@ fn to_usage(u: &UsageIn) -> Usage {
 
 fn finish(r: &Response<'_>, content: String, refusal: String) -> Result<Answer, Fail> {
     let usage = r.usage.as_ref().map(to_usage).unwrap_or_default();
+    if r.status.as_deref() == Some("failed") {
+        let error = r.error.map_or("null", |e| e.0);
+        return Err(Fail::Api(format!("response failed: {error}")));
+    }
     if !refusal.is_empty() {
         return Err(Fail::Refusal(refusal, usage));
     }
@@ -272,6 +256,7 @@ impl StreamAcc {
                 self.content.push_str(&d);
             }
             ("response.refusal.delta", Some(d), _) => self.refusal.push_str(&d),
+            ("error", _, _) => self.end = Some(Err(Fail::Api(data.to_owned()))),
             ("response.completed" | "response.incomplete" | "response.failed", _, Some(r)) => {
                 let content = std::mem::take(&mut self.content);
                 let refusal = std::mem::take(&mut self.refusal);

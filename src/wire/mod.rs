@@ -138,6 +138,9 @@ pub(crate) enum Fail {
     Refusal(String, Usage),
     /// The body is not the provider's response format.
     Malformed(String),
+    /// The provider reported an error inside a successful HTTP response: an
+    /// error event in a stream, or a failed Responses API response.
+    Api(String),
     Unsupported(String),
 }
 

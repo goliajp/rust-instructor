@@ -133,6 +133,20 @@ Each item lists what to change. Most code needs the first three.
   (`#[serde(tag = "kind")] enum E { A(Inner) }`) lost the struct's fields in
   the schema.
 - A refused or failed extraction reports its token usage.
+- An error sent inside a stream (Anthropic `error` event, an OpenAI chunk with
+  `error`, a Responses `error` event or `response.failed`) and a Responses API
+  response with `status: failed` end the extraction with `Error::Api`; they
+  were read as an empty answer and re-asked.
+- `Usage::reasoning_tokens` counts Anthropic
+  `usage.output_tokens_details.thinking_tokens`, and `cache_write_tokens`
+  counts OpenAI `cache_write_tokens` (Chat Completions and Responses).
+- A streamed Anthropic request that offers the tool without forcing it
+  (thinking on, or a recursive type) keeps the model's prose answer when the
+  model does not call the tool, as the non-streamed request does; it was
+  dropped and the re-ask quoted an empty answer.
+- Gemini schemas spell `const` as a one-value `enum`: Gemini's JSON Schema
+  subset has no `const` and ignores it, so the tag of a tagged enum was not
+  constrained.
 
 ## [1.5.1] - 2026-11-26
 

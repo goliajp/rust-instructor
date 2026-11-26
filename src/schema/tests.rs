@@ -292,6 +292,22 @@ fn diff(a: &Value, b: &Value, path: &str) -> Option<String> {
     }
 }
 
+/// 2.0 sends Gemini `enum: [x]` where 1.5 sent `const: x`.
+fn const_to_enum(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            if !m.contains_key("enum")
+                && let Some(c) = m.remove("const")
+            {
+                m.insert("enum".into(), Value::Array(vec![c]));
+            }
+            m.values_mut().for_each(const_to_enum);
+        }
+        Value::Array(a) => a.iter_mut().for_each(const_to_enum),
+        _ => {}
+    }
+}
+
 fn same<T: Schema + JsonSchema + 'static>() {
     for list in [false, true] {
         let name = std::any::type_name::<T>();
@@ -310,7 +326,10 @@ fn same<T: Schema + JsonSchema + 'static>() {
             "{name} list={list}"
         );
         for (d, o) in PAIRS {
-            let (a, b) = (ours::<T>(list, d), theirs::<T>(list, o));
+            let (a, mut b) = (ours::<T>(list, d), theirs::<T>(list, o));
+            if d == Dialect::GeminiJson {
+                const_to_enum(&mut b);
+            }
             assert_eq!(diff(&a, &b, ""), None, "{name} list={list} {d:?}");
         }
     }
@@ -431,4 +450,20 @@ fn schemars_bridge_matches_1_5() {
             assert_eq!(diff(&got, &theirs::<Invoice>(list, o), ""), None, "{d:?}");
         }
     }
+}
+
+#[test]
+fn gemini_tags_are_enums() {
+    let s = entry_for::<E3>(false).get(Dialect::GeminiJson);
+    assert!(!s.contains("\"const\""), "{s}");
+    assert!(
+        s.contains(r#""kind":{"type":"string","enum":["A"]}"#),
+        "{s}"
+    );
+    // the other dialects keep `const`
+    assert!(
+        entry_for::<E3>(false)
+            .get(Dialect::Strict)
+            .contains("\"const\"")
+    );
 }
