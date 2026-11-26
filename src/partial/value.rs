@@ -10,11 +10,11 @@ pub struct PartialValue<'a> {
 }
 
 impl<'a> PartialValue<'a> {
-    fn node(&self) -> &'a super::Node {
+    pub(super) fn node(&self) -> &'a super::Node {
         &self.p.nodes[self.idx]
     }
 
-    fn at_idx(&self, idx: usize) -> PartialValue<'a> {
+    pub(super) fn at_idx(&self, idx: usize) -> PartialValue<'a> {
         PartialValue { p: self.p, idx }
     }
 
@@ -173,6 +173,24 @@ impl<'a> PartialValue<'a> {
         let mut out = Vec::new();
         self.write_json(&mut out);
         crate::json::from_slice(&out).ok()
+    }
+
+    /// The value so far as `T`'s partial type: for a type with
+    /// `#[schema(partial)]`, a struct of `Option` fields. `None` when the
+    /// value does not fit yet, for example before an object has started.
+    /// Maps and tuples are read in their own form; for a strict answer's
+    /// wire form use [`Extract::on_snapshot`](crate::Extract::on_snapshot).
+    pub fn snapshot<T: super::Partial>(&self) -> Option<T::Partial> {
+        T::read(super::de::Tree::new(*self, None)).ok().flatten()
+    }
+
+    /// The same, read through the strict schema's plan when the answer is
+    /// in its wire form.
+    pub(crate) fn snapshot_at<T: super::Partial>(
+        &self,
+        at: Option<crate::schema::At<'_>>,
+    ) -> Option<T::Partial> {
+        T::read(super::de::Tree::new(*self, at)).ok().flatten()
     }
 
     /// Copy into a `serde_json::Value` (feature `serde_json`).

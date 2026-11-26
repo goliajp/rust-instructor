@@ -48,7 +48,7 @@ fn shape_fn(ty: &Type) -> TokenStream {
     quote!(<#ty as ::instructors::schema::Schema>::schema)
 }
 
-fn unraw(id: &Ident) -> String {
+pub(crate) fn unraw(id: &Ident) -> String {
     let s = id.to_string();
     s.strip_prefix("r#").map(str::to_owned).unwrap_or(s)
 }
@@ -102,6 +102,10 @@ pub(crate) fn derive(input: DeriveInput) -> Result<TokenStream> {
             }
         }
     };
+    let partial = match &c.partial {
+        Some(pname) => crate::partial::expand(&input, &c, pname.as_deref())?,
+        None => quote!(),
+    };
     Ok(quote! {
         #[automatically_derived]
         impl #impl_g ::instructors::schema::Schema for #name #ty_g #where_g {
@@ -109,6 +113,7 @@ pub(crate) fn derive(input: DeriveInput) -> Result<TokenStream> {
                 #body
             }
         }
+        #partial
     })
 }
 

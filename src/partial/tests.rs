@@ -186,3 +186,34 @@ fn parse_into_a_type_with_optional_fields() {
     let s: Snap = p.root().unwrap().parse().unwrap();
     assert_eq!(s.born, Some(18));
 }
+
+#[derive(Debug, serde::Deserialize, crate::Schema)]
+#[schema(partial)]
+#[allow(dead_code, reason = "only the partial type is read")]
+struct Wide {
+    big: u128,
+    neg: i64,
+    text: String,
+}
+
+#[test]
+fn snapshot_numbers_are_whole_and_exact() {
+    let mut p = PartialParser::new();
+    p.feed(r#"{"big": 340282366920938463463374607431768211455, "neg": -12"#);
+    let s = p.root().unwrap().snapshot::<Wide>().unwrap();
+    assert_eq!(s.big, Some(u128::MAX));
+    assert_eq!(s.neg, None, "-12 may still grow");
+    assert_eq!(s.text, None);
+    p.feed(r#"3, "text": "aé"#);
+    let s = p.root().unwrap().snapshot::<Wide>().unwrap();
+    assert_eq!(s.neg, Some(-123));
+    assert_eq!(s.text.as_deref(), Some("aé"));
+}
+
+#[test]
+fn snapshot_of_a_value_that_is_not_an_object_yet() {
+    let mut p = PartialParser::new();
+    p.feed("[1, 2");
+    assert!(p.root().unwrap().snapshot::<Wide>().is_none());
+    assert_eq!(p.root().unwrap().snapshot::<Vec<u8>>(), Some(vec![1]));
+}

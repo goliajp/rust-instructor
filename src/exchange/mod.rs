@@ -57,19 +57,28 @@ type Hook<F> = Option<Box<F>>;
 /// a strict schema's wire form.
 pub(crate) type ItemHook = dyn Fn(&str, Option<&crate::schema::Plan>) + Send + Sync;
 
+/// Called with the streaming view, and where it sits in the schema plan
+/// when the answer is in a strict schema's wire form.
+pub(crate) type SnapshotHook =
+    dyn Fn(PartialValue<'_>, Option<crate::schema::At<'_>>) + Send + Sync;
+
 #[derive(Default)]
 pub(crate) struct Hooks {
     pub(crate) on_request: Hook<dyn Fn(&HttpRequest) + Send + Sync>,
     pub(crate) on_response: Hook<dyn Fn(&Usage) + Send + Sync>,
     pub(crate) on_delta: Hook<dyn Fn(&str) + Send + Sync>,
     pub(crate) on_partial: Hook<dyn Fn(PartialValue<'_>) + Send + Sync>,
+    pub(crate) on_snapshot: Hook<SnapshotHook>,
     /// Receives each list item's JSON once it is complete.
     pub(crate) on_item: Hook<ItemHook>,
 }
 
 impl Hooks {
     fn streaming(&self) -> bool {
-        self.on_delta.is_some() || self.on_partial.is_some() || self.on_item.is_some()
+        self.on_delta.is_some()
+            || self.on_partial.is_some()
+            || self.on_snapshot.is_some()
+            || self.on_item.is_some()
     }
 }
 

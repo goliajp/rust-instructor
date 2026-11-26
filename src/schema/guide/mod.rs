@@ -19,6 +19,7 @@ mod plan;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+pub(crate) use key::Key;
 pub(crate) use plan::Plan;
 
 use self::de::{Cx, Guide};
@@ -121,6 +122,83 @@ impl Plan {
         match self.items {
             Some(node) => read(self, text, node, false),
             None => Err(JsonError::new("not a list schema")),
+        }
+    }
+}
+
+/// A place in the plan, for readers of the partial tree: which node a
+/// value of a strict answer belongs to, so the wire forms can be read back.
+/// Only the reshaped forms are followed; a choice between alternatives
+/// that the kind of the value does not settle ends the guidance.
+#[derive(Clone, Copy)]
+pub(crate) struct At<'p> {
+    plan: &'p Plan,
+    node: Id,
+}
+
+impl<'p> At<'p> {
+    /// The node of the value the streaming view shows: the list for a
+    /// list schema, else the root.
+    pub(crate) fn view(plan: &'p Plan, list: bool) -> Option<Self> {
+        let node = if list { plan.list? } else { plan.root };
+        Some(Self { plan, node })
+    }
+
+    fn typed(&self) -> Option<&'p plan::Typed> {
+        match self.plan.node(self.node) {
+            plan::Node::Typed(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The node for a value that is or is not `null`.
+    pub(crate) fn resolve(self, null: bool) -> Option<Self> {
+        let mut node = self.node;
+        loop {
+            match self.plan.node(node) {
+                plan::Node::AnyOf {
+                    alts,
+                    option: Some(first),
+                } => node = if null { alts[1] } else { *first },
+                plan::Node::AnyOf { .. } | plan::Node::Fail(_) => return None,
+                _ => return Some(Self { node, ..self }),
+            }
+        }
+    }
+
+    fn at(self, node: Id) -> Self {
+        Self { node, ..self }
+    }
+
+    /// A map sent as key and value pairs: the node of its values.
+    pub(crate) fn pairs(self) -> Option<Self> {
+        self.typed()?.map.map(|v| self.at(v))
+    }
+
+    /// A tuple: the node of each position.
+    pub(crate) fn slots(self) -> Option<impl Iterator<Item = Self>> {
+        let p = self.typed()?.prefix.as_deref()?;
+        Some(p.iter().map(move |&n| self.at(n)))
+    }
+
+    /// The node of an object member.
+    pub(crate) fn key(self, k: &str) -> Option<Self> {
+        let t = self.typed()?;
+        if let Some((_, n)) = t.props.iter().find(|(name, _)| &**name == k) {
+            return Some(self.at(*n));
+        }
+        match (t.map, &t.extra) {
+            (Some(v), _) | (None, &plan::Extra::Node(v)) => Some(self.at(v)),
+            _ => None,
+        }
+    }
+
+    /// The node of a list item.
+    pub(crate) fn item(self, i: usize) -> Option<Self> {
+        let t = self.typed()?;
+        match &t.prefix {
+            Some(p) => p.get(i).map(|&n| self.at(n)),
+            None => Some(self.at(t.items)),
         }
     }
 }

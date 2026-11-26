@@ -22,7 +22,7 @@ mod variant;
 
 pub use cache::Cache;
 pub(crate) use cache::{Dialect, SchemaEntry, entry_for};
-pub(crate) use guide::Plan;
+pub(crate) use guide::{At, Key, Plan};
 use intern::lock;
 #[doc(hidden)]
 pub use intern::{intern, leak};

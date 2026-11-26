@@ -6,7 +6,7 @@ use serde::de::{self, DeserializeSeed, EnumAccess, Unexpected, VariantAccess, Vi
 
 use crate::json::JsonError;
 
-pub(super) struct Key<'k, 'de> {
+pub(crate) struct Key<'k, 'de> {
     borrowed: Option<&'de str>,
     copied: &'k str,
     // where the key was read, for errors
@@ -14,7 +14,7 @@ pub(super) struct Key<'k, 'de> {
 }
 
 impl<'k, 'de> Key<'k, 'de> {
-    pub(super) fn borrowed(s: &'de str, at: usize) -> Self {
+    pub(crate) fn borrowed(s: &'de str, at: usize) -> Self {
         Self {
             borrowed: Some(s),
             copied: "",
@@ -22,7 +22,7 @@ impl<'k, 'de> Key<'k, 'de> {
         }
     }
 
-    pub(super) fn copied(s: &'k str, at: usize) -> Self {
+    pub(crate) fn copied(s: &'k str, at: usize) -> Self {
         Self {
             borrowed: None,
             copied: s,
@@ -132,7 +132,7 @@ impl<'de> EnumAccess<'de> for Key<'_, 'de> {
 }
 
 /// A variant named by a string: only a unit variant fits.
-pub(super) struct UnitOnly;
+pub(crate) struct UnitOnly;
 
 impl<'de> VariantAccess<'de> for UnitOnly {
     type Error = JsonError;

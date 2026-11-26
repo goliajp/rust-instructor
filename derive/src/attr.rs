@@ -23,6 +23,9 @@ pub(crate) struct Container {
     pub(crate) default: bool,
     pub(crate) doc: Option<String>,
     pub(crate) like: Option<Type>,
+    /// `#[schema(partial)]`: generate the streaming snapshot type, under
+    /// this name when one is given.
+    pub(crate) partial: Option<Option<String>>,
 }
 
 #[derive(Default)]
@@ -36,6 +39,8 @@ pub(crate) struct Field {
     pub(crate) format: Option<String>,
     pub(crate) min: Option<String>,
     pub(crate) max: Option<String>,
+    /// `#[schema(whole)]`: in a snapshot only once complete.
+    pub(crate) whole: bool,
     // `with` / `deserialize_with` seen, so the field type says nothing
     pub(crate) custom_de: Option<Span>,
 }
@@ -167,7 +172,14 @@ pub(crate) fn container(attrs: &[Attribute]) -> Result<Container> {
         match key(m).as_str() {
             "description" => c.doc = Some(string(m)?),
             "like" => c.like = Some(m.value()?.parse::<Type>()?),
-            _ => return Err(err(m.path.span_ident(), "expected `description` or `like`")),
+            "partial" if m.input.peek(Token![=]) => c.partial = Some(Some(string(m)?)),
+            "partial" => c.partial = Some(None),
+            _ => {
+                return Err(err(
+                    m.path.span_ident(),
+                    "expected `description`, `like` or `partial`",
+                ));
+            }
         }
         Ok(())
     })?;
@@ -261,10 +273,11 @@ pub(crate) fn field(attrs: &[Attribute]) -> Result<Field> {
             "min" => f.min = Some(number(m)?),
             "max" => f.max = Some(number(m)?),
             "like" => f.like = Some(m.value()?.parse::<Type>()?),
+            "whole" => f.whole = true,
             _ => {
                 return Err(err(
                     m.path.span_ident(),
-                    "expected `description`, `format`, `min`, `max` or `like`",
+                    "expected `description`, `format`, `min`, `max`, `like` or `whole`",
                 ));
             }
         }

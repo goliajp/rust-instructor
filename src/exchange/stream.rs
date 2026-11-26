@@ -2,7 +2,7 @@
 
 use super::{Exchange, Hooks, State};
 use crate::partial::PartialParser;
-use crate::schema::SchemaEntry;
+use crate::schema::{At, SchemaEntry};
 use crate::sse::SseDecoder;
 use crate::wire::{Headers, Stream};
 use serde::de::DeserializeOwned;
@@ -125,23 +125,28 @@ impl View<'_> {
         if let Some(h) = &hooks.on_delta {
             h(delta);
         }
-        if hooks.on_partial.is_none() && hooks.on_item.is_none() {
+        if hooks.on_partial.is_none() && hooks.on_snapshot.is_none() && hooks.on_item.is_none() {
             return;
         }
         parser.feed(delta);
         let Some(root) = parser.root() else { return };
-        if let Some(h) = &hooks.on_partial {
-            // a strict schema wraps a root that is not an object
-            let view = if self.list {
-                root.get("items")
-            } else if self.wrapped {
-                root.get("value")
-            } else {
-                Some(root)
-            };
-            if let Some(v) = view {
-                h(v);
-            }
+        // a strict schema wraps a root that is not an object
+        let view = if self.list {
+            root.get("items")
+        } else if self.wrapped {
+            root.get("value")
+        } else {
+            Some(root)
+        };
+        if let (Some(h), Some(v)) = (&hooks.on_partial, view) {
+            h(v);
+        }
+        if let (Some(h), Some(v)) = (&hooks.on_snapshot, view) {
+            let at = self
+                .strict
+                .then(|| At::view(self.schema.guide(), self.list))
+                .flatten();
+            h(v, at);
         }
         if let Some(h) = &hooks.on_item {
             let Some(items) = root.get("items").or(Some(root)) else {
