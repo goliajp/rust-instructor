@@ -8,7 +8,7 @@ use crate::schema::Dialect;
 /// it goes as a plain one and the answer is checked here.
 pub(crate) fn openai_schema<'a>(r: &Req<'a>) -> (&'a str, bool) {
     if r.schema.has_any() {
-        (r.schema.get(Dialect::AnthropicTool), false)
+        (r.schema.get(Dialect::Plain), false)
     } else {
         (r.schema.get(Dialect::Strict), true)
     }
@@ -17,25 +17,18 @@ pub(crate) fn openai_schema<'a>(r: &Req<'a>) -> (&'a str, bool) {
 impl Provider {
     /// The schema dialect the provider enforces on the answer, when it
     /// enforces one: the answer is in that dialect's form, and constraints
-    /// the dialect dropped are checked here. `AnthropicTool` is the plain
-    /// schema, sent when a strict one cannot carry the type.
+    /// the dialect dropped are checked here.
     pub(crate) fn answer_dialect(&self, r: &Req<'_>) -> Option<Dialect> {
         let any = r.schema.has_any();
         match &self.wire {
             Wire::OpenAiChat(_) if matches!(r.mode, OutputMode::Schema | OutputMode::Tool) => {
-                Some(if any {
-                    Dialect::AnthropicTool
-                } else {
-                    Dialect::Strict
-                })
+                Some(if any { Dialect::Plain } else { Dialect::Strict })
             }
-            Wire::OpenAiResponses if r.mode == OutputMode::Schema => Some(if any {
-                Dialect::AnthropicTool
-            } else {
-                Dialect::Strict
-            }),
+            Wire::OpenAiResponses if r.mode == OutputMode::Schema => {
+                Some(if any { Dialect::Plain } else { Dialect::Strict })
+            }
             Wire::Anthropic if anthropic::output_format(r) => Some(Dialect::AnthropicOutput),
-            Wire::Anthropic if any && r.mode == OutputMode::Schema => Some(Dialect::AnthropicTool),
+            Wire::Anthropic if anthropic::tool_call(r) => Some(Dialect::Plain),
             Wire::Gemini if r.mode == OutputMode::Schema => Some(Dialect::GeminiJson),
             _ => None,
         }
@@ -51,7 +44,7 @@ impl Provider {
     pub(crate) fn wraps_root(&self, r: &Req<'_>) -> bool {
         matches!(
             self.answer_dialect(r),
-            Some(Dialect::Strict | Dialect::AnthropicOutput)
+            Some(Dialect::Strict | Dialect::AnthropicOutput | Dialect::Plain)
         ) && r.schema.wrapped()
     }
 }

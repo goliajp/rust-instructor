@@ -17,8 +17,8 @@ use crate::reasoning::{Effort, Reasoning};
 use crate::schema::Dialect;
 use crate::usage::Usage;
 use content::content;
-pub(crate) use plan::output_format;
 use plan::{Plan, plan};
+pub(crate) use plan::{output_format, tool_call};
 
 const DEFAULT_MAX_TOKENS: u32 = 16384;
 const SYSTEM: &str = "Extract the requested information from the given text.";
@@ -72,7 +72,7 @@ pub(crate) fn request(p: &Provider, r: &Req<'_>) -> Result<HttpRequest, Fail> {
         let mut t = Obj::new(tools.item());
         t.str("name", "extract");
         t.str("description", "Extract structured data from the input");
-        t.raw("input_schema", r.schema.get(Dialect::AnthropicTool));
+        t.raw("input_schema", r.schema.get(Dialect::Plain));
         t.end();
         tools.end();
         let mut tc = Obj::new(o.key("tool_choice"));

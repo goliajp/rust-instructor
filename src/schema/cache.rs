@@ -2,14 +2,9 @@ use std::sync::{Mutex, OnceLock};
 
 use super::dialect;
 use super::lower;
-use super::tree::{J, write};
+use super::tree::J;
 use crate::json::JsonError;
 
-fn text(v: &J) -> String {
-    let mut out = Vec::new();
-    write(v, &mut out);
-    String::from_utf8(out).expect("the writer emits utf-8")
-}
 use super::{Schema, Shape, lock};
 
 /// The schema dialects the request builders splice into bodies.
@@ -24,9 +19,13 @@ pub(crate) enum Dialect {
     AnthropicTool,
     /// Gemini `responseFormat.text.schema`.
     GeminiJson,
+    /// The plain schema with a root that is not an object wrapped as
+    /// `{"value": ..}`: Anthropic tool `input_schema`, and OpenAI when no
+    /// strict schema can carry the type.
+    Plain,
 }
 
-const DIALECTS: usize = 4;
+const DIALECTS: usize = 5;
 
 /// Per-type storage for built schemas; lives inside each struct and enum
 /// shape so a lookup is a field access, not a map lookup.
@@ -101,8 +100,10 @@ impl SchemaEntry {
             Dialect::Strict => (0, &OPENAI_DROPS[..], false, true),
             Dialect::AnthropicOutput => (1, &ANTHROPIC_DROPS[..], true, true),
             Dialect::GeminiJson => (2, &GEMINI_DROPS[..], false, false),
-            // the plain schema, sent when no strict one can carry the type
-            Dialect::AnthropicTool => return true,
+            // nothing is enforced on a plain schema's answer: it is checked
+            // here when the type holds any value, and unwrapped when wrapped
+            Dialect::Plain => return self.has_any() || self.wrapped(),
+            Dialect::AnthropicTool => return false,
         };
         *self.reshaped[i]
             .get_or_init(|| super::strict::reshaped(&self.base, drops, min_items, reshape))
@@ -124,16 +125,12 @@ impl SchemaEntry {
     /// The answer to a strict-schema request ([`Dialect::Strict`],
     /// [`Dialect::AnthropicOutput`]) as the type's own JSON.
     pub(crate) fn unwire(&self, answer: &str) -> Result<String, JsonError> {
-        let v: J = crate::json::from_str(answer)?;
-        let v = super::unwire::unwire(&self.base, v).map_err(JsonError::new)?;
-        Ok(text(&v))
+        super::transcode::answer(&self.base, answer).map_err(JsonError::new)
     }
 
     /// One complete item of a strict list answer as the item type's JSON.
     pub(crate) fn unwire_item(&self, item: &str) -> Result<String, JsonError> {
-        let v: J = crate::json::from_str(item)?;
-        let v = super::unwire::unwire_item(&self.base, v).map_err(JsonError::new)?;
-        Ok(text(&v))
+        super::transcode::item(&self.base, item).map_err(JsonError::new)
     }
 
     #[cfg(test)]

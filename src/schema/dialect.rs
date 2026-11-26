@@ -58,8 +58,20 @@ pub(crate) fn build(base: &J, dialect: Dialect) -> Box<str> {
             });
             v
         }
-        Dialect::GeminiJson => {
+        Dialect::Plain => {
             walk(&mut v, &mut |m| {
+                remove(m, "title");
+            });
+            wrap(v)
+        }
+        Dialect::GeminiJson => {
+            // a value of any type as an empty schema object; the subset
+            // documents schema objects only
+            if v == J::Bool(true) {
+                v = J::Obj(Map::new());
+            }
+            walk(&mut v, &mut |m| {
+                any_to_empty(m);
                 const_to_enum(m);
                 for k in strict::GEMINI_DROPS {
                     remove(m, k);
@@ -97,7 +109,7 @@ pub(crate) fn build_15(base: &J, dialect: Dialect) -> String {
             one_of_to_any_of(m);
             close_object(m);
         }
-        Dialect::AnthropicTool => {
+        Dialect::AnthropicTool | Dialect::Plain => {
             remove(m, "title");
         }
         Dialect::GeminiJson => {}
@@ -129,6 +141,23 @@ fn const_to_enum(m: &mut Map) {
     {
         let (_, value) = m.remove(i);
         m.insert(i, ("enum".into(), J::Arr(vec![value])));
+    }
+}
+
+fn any_to_empty(m: &mut Map) {
+    for (k, x) in m.iter_mut() {
+        match (k.as_str(), x) {
+            ("items" | "additionalProperties", x @ J::Bool(true)) => *x = J::Obj(Map::new()),
+            ("properties" | "$defs", J::Obj(p)) => p
+                .iter_mut()
+                .filter(|(_, x)| *x == J::Bool(true))
+                .for_each(|(_, x)| *x = J::Obj(Map::new())),
+            ("anyOf" | "oneOf" | "prefixItems", J::Arr(a)) => a
+                .iter_mut()
+                .filter(|x| **x == J::Bool(true))
+                .for_each(|x| *x = J::Obj(Map::new())),
+            _ => {}
+        }
     }
 }
 

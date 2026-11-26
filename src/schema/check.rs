@@ -1,7 +1,6 @@
 //! The constraint keywords strict providers do not take, checked on the
 //! answer instead.
 
-use super::strict::text;
 use super::tree::{J, Map, get};
 
 fn num(v: &J) -> Option<f64> {
@@ -11,84 +10,110 @@ fn num(v: &J) -> Option<f64> {
     }
 }
 
-fn at(path: &str) -> &str {
-    if path.is_empty() { "the answer" } else { path }
+/// The constraint keywords of one subschema, read once.
+#[derive(Default)]
+pub(crate) struct Bounds {
+    min: Option<f64>,
+    max: Option<f64>,
+    xmin: Option<f64>,
+    xmax: Option<f64>,
+    multiple: Option<f64>,
+    min_len: Option<f64>,
+    max_len: Option<f64>,
+    min_items: Option<f64>,
+    max_items: Option<f64>,
 }
 
-/// `v` if it meets the constraints of the subschema `m`, else why not.
-pub(crate) fn constraints(m: &Map, v: J, path: &str) -> Result<J, String> {
-    let bound = |k: &str| get(m, k).and_then(num);
-    let fail = |what: String| Err(format!("{}: {} {what}", at(path), text(&v)));
-    match &v {
-        J::Num(_) => {
-            let x = num(&v).unwrap_or(f64::NAN);
-            if let Some(b) = bound("minimum")
-                && x < b
-            {
-                return fail(format!("is less than the minimum {b}"));
-            }
-            if let Some(b) = bound("maximum")
-                && x > b
-            {
-                return fail(format!("is greater than the maximum {b}"));
-            }
-            if let Some(b) = bound("exclusiveMinimum")
-                && x <= b
-            {
-                return fail(format!("must be greater than {b}"));
-            }
-            if let Some(b) = bound("exclusiveMaximum")
-                && x >= b
-            {
-                return fail(format!("must be less than {b}"));
-            }
-            if let Some(b) = bound("multipleOf")
-                && b > 0.0
-                && ((x / b).round() * b - x).abs() > 1e-9 * x.abs().max(1.0)
-            {
-                return fail(format!("is not a multiple of {b}"));
-            }
-        }
-        J::Str(t) => {
-            let n = t.chars().count() as f64;
-            if let Some(b) = bound("minLength")
-                && n < b
-            {
-                return fail(format!("is shorter than {b} characters"));
-            }
-            if let Some(b) = bound("maxLength")
-                && n > b
-            {
-                return fail(format!("is longer than {b} characters"));
-            }
-        }
-        J::Arr(xs) => {
-            let n = xs.len() as f64;
-            if let Some(b) = bound("minItems")
-                && n < b
-            {
-                return fail(format!("has fewer than {b} items"));
-            }
-            if let Some(b) = bound("maxItems")
-                && n > b
-            {
-                return fail(format!("has more than {b} items"));
-            }
-            if get(m, "uniqueItems") == Some(&J::Bool(true)) {
-                let seen: Vec<Vec<u8>> = xs
-                    .iter()
-                    .map(|x| {
-                        let mut out = Vec::new();
-                        super::tree::write(x, &mut out);
-                        out
-                    })
-                    .collect();
-                if (1..seen.len()).any(|i| seen[..i].contains(&seen[i])) {
-                    return fail("has repeated items".into());
-                }
-            }
-        }
-        _ => {}
+pub(crate) fn bounds(m: &Map) -> Bounds {
+    let b = |k: &str| get(m, k).and_then(num);
+    Bounds {
+        min: b("minimum"),
+        max: b("maximum"),
+        xmin: b("exclusiveMinimum"),
+        xmax: b("exclusiveMaximum"),
+        multiple: b("multipleOf"),
+        min_len: b("minLength"),
+        max_len: b("maxLength"),
+        min_items: b("minItems"),
+        max_items: b("maxItems"),
     }
-    Ok(v)
+}
+
+impl Bounds {
+    pub(crate) fn is_empty(&self) -> bool {
+        [
+            self.min,
+            self.max,
+            self.xmin,
+            self.xmax,
+            self.multiple,
+            self.min_len,
+            self.max_len,
+        ]
+        .iter()
+        .all(Option::is_none)
+    }
+
+    /// A number's text against the numeric bounds; the reason when it
+    /// breaks one.
+    pub(crate) fn number(&self, text: &str) -> Result<(), String> {
+        let x: f64 = text.parse().unwrap_or(f64::NAN);
+        if let Some(b) = self.min
+            && x < b
+        {
+            return Err(format!("is less than the minimum {b}"));
+        }
+        if let Some(b) = self.max
+            && x > b
+        {
+            return Err(format!("is greater than the maximum {b}"));
+        }
+        if let Some(b) = self.xmin
+            && x <= b
+        {
+            return Err(format!("must be greater than {b}"));
+        }
+        if let Some(b) = self.xmax
+            && x >= b
+        {
+            return Err(format!("must be less than {b}"));
+        }
+        if let Some(b) = self.multiple
+            && b > 0.0
+            && ((x / b).round() * b - x).abs() > 1e-9 * x.abs().max(1.0)
+        {
+            return Err(format!("is not a multiple of {b}"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn length(&self, n: usize) -> Result<(), String> {
+        let n = n as f64;
+        if let Some(b) = self.min_len
+            && n < b
+        {
+            return Err(format!("is shorter than {b} characters"));
+        }
+        if let Some(b) = self.max_len
+            && n > b
+        {
+            return Err(format!("is longer than {b} characters"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn items(&self, n: usize) -> Result<(), String> {
+        let n = n as f64;
+        if let Some(b) = self.min_items
+            && n < b
+        {
+            return Err(format!("has fewer than {b} items"));
+        }
+        if let Some(b) = self.max_items
+            && n > b
+        {
+            return Err(format!("has more than {b} items"));
+        }
+        Ok(())
+    }
 }

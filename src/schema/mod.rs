@@ -14,8 +14,8 @@ mod lower;
 #[cfg(feature = "schemars")]
 pub(crate) mod schemars;
 mod strict;
+mod transcode;
 mod tree;
-mod unwire;
 mod variant;
 
 pub use cache::Cache;
