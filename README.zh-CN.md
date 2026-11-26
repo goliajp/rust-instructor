@@ -161,7 +161,7 @@ let all: Vec<Entity> = client
 
 | 情况 | 得到什么 |
 |---|---|
-| HTTP 重试用完后，接口仍返回非 2xx 状态码 | `Error::Api { status, message, retry_after, .. }` |
+| HTTP 重试用完后，接口仍返回非 2xx 状态码，或者在流式响应中途发来错误 | `Error::Api { status, message, retry_after, .. }` |
 | 连接失败 | `Error::Transport { source, .. }` |
 | 每次回答都解析失败，或者都没通过校验 | `Error::Parse { attempts, raw, .. }` 或 `Error::Validation { .. }` |
 | 模型拒绝回答（OpenAI 的 `refusal`、Anthropic 的 `stop_reason: refusal`、Gemini 的安全拦截）| `Error::Refusal { text, .. }`，不会重试 |

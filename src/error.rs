@@ -17,7 +17,9 @@ pub enum Error {
         source: TransportError,
         usage: Box<Usage>,
     },
-    /// The provider answered with a non-success HTTP status.
+    /// The provider answered with a non-success HTTP status, a body that is
+    /// not its response format, or an error inside a successful response
+    /// (an error event in a stream); `status` is the HTTP status.
     Api {
         provider: &'static str,
         status: u16,

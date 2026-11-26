@@ -4,14 +4,18 @@ use std::borrow::Cow;
 
 use serde::Deserialize;
 
+mod content;
+
 use super::{
     Answer, Arr, DEFAULT_SYSTEM, Fail, HttpRequest, Obj, OutputMode, Provider, Req, Stop, envelope,
     json_headers, system_with_schema, type_obj,
 };
-use crate::message::{Part, Role};
+use crate::json::Raw;
+use crate::message::Role;
 use crate::reasoning::Reasoning;
 use crate::schema::Dialect;
 use crate::usage::Usage;
+use content::content;
 
 /// Which OpenAI-compatible API is on the other end, from the base URL host.
 /// It decides the output-limit field, the reasoning parameters and the
@@ -102,44 +106,6 @@ fn reasoning(o: &mut Obj<'_>, host: Host, r: Option<Reasoning>) -> Result<(), Fa
         }
     }
     Ok(())
-}
-
-fn content(out: &mut Vec<u8>, parts: &[Part]) {
-    if let [Part::Text(t)] = parts {
-        crate::json::write_str(out, t);
-        return;
-    }
-    let mut a = Arr::new(out);
-    for p in parts {
-        let mut o = Obj::new(a.item());
-        match p {
-            Part::Text(t) => {
-                o.str("type", "text");
-                o.str("text", t);
-            }
-            Part::ImageUrl(u) => {
-                o.str("type", "image_url");
-                let mut i = Obj::new(o.key("image_url"));
-                i.str("url", u);
-                i.end();
-            }
-            Part::Image { media_type, data } => {
-                o.str("type", "image_url");
-                let mut i = Obj::new(o.key("image_url"));
-                i.str("url", &format!("data:{media_type};base64,{data}"));
-                i.end();
-            }
-            Part::Document { media_type, data } => {
-                o.str("type", "file");
-                let mut f = Obj::new(o.key("file"));
-                f.str("filename", "document.pdf");
-                f.str("file_data", &format!("data:{media_type};base64,{data}"));
-                f.end();
-            }
-        }
-        o.end();
-    }
-    a.end();
 }
 
 pub(crate) fn request(p: &Provider, host: Host, r: &Req<'_>) -> Result<HttpRequest, Fail> {
@@ -250,6 +216,8 @@ struct Details {
     #[serde(default)]
     cached_tokens: u64,
     #[serde(default)]
+    cache_write_tokens: u64,
+    #[serde(default)]
     reasoning_tokens: u64,
 }
 
@@ -261,6 +229,10 @@ impl UsageIn {
                 .prompt_tokens_details
                 .as_ref()
                 .map_or(0, |d| d.cached_tokens),
+            cache_write_tokens: self
+                .prompt_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.cache_write_tokens),
             output_tokens: self.completion_tokens,
             reasoning_tokens: self
                 .completion_tokens_details
@@ -408,6 +380,8 @@ struct Chunk<'a> {
     choices: Vec<ChunkChoice<'a>>,
     #[serde(default)]
     usage: Option<UsageIn>,
+    #[serde(default, borrow)]
+    error: Option<Raw<'a>>,
 }
 
 #[derive(Deserialize)]
@@ -434,6 +408,7 @@ pub(crate) struct StreamAcc {
     refusal: String,
     usage: Usage,
     finish_reason: Option<String>,
+    error: Option<String>,
 }
 
 impl StreamAcc {
@@ -441,6 +416,11 @@ impl StreamAcc {
         let Ok(chunk) = crate::json::from_str::<Chunk<'_>>(data) else {
             return;
         };
+        // an error after the stream has started arrives as a chunk
+        if let Some(e) = chunk.error {
+            self.error = Some(e.0.to_owned());
+            return;
+        }
         if let Some(u) = &chunk.usage {
             self.usage = u.to_usage();
         }
@@ -464,6 +444,9 @@ impl StreamAcc {
     }
 
     pub(crate) fn finish(self) -> Result<Answer, Fail> {
+        if let Some(e) = self.error {
+            return Err(Fail::Api(e));
+        }
         finish(
             self.content,
             self.usage,

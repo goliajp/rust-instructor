@@ -4,15 +4,18 @@ use std::borrow::Cow;
 
 use serde::Deserialize;
 
+mod content;
+
 use super::{
     Answer, Arr, Fail, HttpRequest, Obj, OutputMode, Provider, Req, Stop, envelope, json_headers,
     system_with_schema, type_obj,
 };
 use crate::json::Raw;
-use crate::message::{Part, Role};
+use crate::message::Role;
 use crate::reasoning::{Effort, Reasoning};
 use crate::schema::Dialect;
 use crate::usage::Usage;
+use content::content;
 
 const DEFAULT_MAX_TOKENS: u32 = 16384;
 const SYSTEM: &str = "Extract the requested information from the given text.";
@@ -54,48 +57,6 @@ fn thinking(r: Option<Reasoning>) -> (Option<Reasoning>, Option<&'static str>) {
         }
         other => (other, None),
     }
-}
-
-fn content(out: &mut Vec<u8>, parts: &[Part]) {
-    if let [Part::Text(t)] = parts {
-        crate::json::write_str(out, t);
-        return;
-    }
-    // images and documents first, then text (anthropic convention)
-    let mut a = Arr::new(out);
-    let media = parts.iter().filter(|p| !matches!(p, Part::Text(_)));
-    let texts = parts.iter().filter(|p| matches!(p, Part::Text(_)));
-    for p in media.chain(texts) {
-        let mut o = Obj::new(a.item());
-        match p {
-            Part::Text(t) => {
-                o.str("type", "text");
-                o.str("text", t);
-            }
-            Part::ImageUrl(u) => {
-                o.str("type", "image");
-                let mut s = Obj::new(o.key("source"));
-                s.str("type", "url");
-                s.str("url", u);
-                s.end();
-            }
-            Part::Image { media_type, data } | Part::Document { media_type, data } => {
-                let kind = if matches!(p, Part::Image { .. }) {
-                    "image"
-                } else {
-                    "document"
-                };
-                o.str("type", kind);
-                let mut s = Obj::new(o.key("source"));
-                s.str("type", "base64");
-                s.str("media_type", media_type);
-                s.str("data", data);
-                s.end();
-            }
-        }
-        o.end();
-    }
-    a.end();
 }
 
 pub(crate) fn request(p: &Provider, r: &Req<'_>) -> Result<HttpRequest, Fail> {
@@ -193,6 +154,14 @@ struct UsageIn {
     cache_read_input_tokens: u64,
     #[serde(default)]
     cache_creation_input_tokens: u64,
+    #[serde(default)]
+    output_tokens_details: Option<OutputDetails>,
+}
+
+#[derive(Deserialize, Default)]
+struct OutputDetails {
+    #[serde(default)]
+    thinking_tokens: u64,
 }
 
 impl UsageIn {
@@ -201,6 +170,15 @@ impl UsageIn {
             self.input_tokens + self.cache_read_input_tokens + self.cache_creation_input_tokens;
         u.cached_input_tokens = self.cache_read_input_tokens;
         u.cache_write_tokens = self.cache_creation_input_tokens;
+    }
+
+    // `output_tokens` already includes the thinking tokens
+    fn output(&self, u: &mut Usage) {
+        u.output_tokens = self.output_tokens;
+        u.reasoning_tokens = self
+            .output_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.thinking_tokens);
     }
 }
 
@@ -251,7 +229,7 @@ pub(crate) fn response(r: &Req<'_>, body: &[u8]) -> Result<Answer, Fail> {
     let mut usage = Usage::default();
     if let Some(u) = &data.usage {
         u.input(&mut usage);
-        usage.output_tokens = u.output_tokens;
+        u.output(&mut usage);
     }
     let text = || -> String {
         data.content
@@ -285,6 +263,14 @@ struct Event<'a> {
     usage: Option<UsageIn>,
     #[serde(default)]
     message: Option<EventMessage>,
+    #[serde(default, borrow)]
+    content_block: Option<BlockStart<'a>>,
+}
+
+#[derive(Deserialize)]
+struct BlockStart<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: Cow<'a, str>,
 }
 
 #[derive(Deserialize)]
@@ -307,18 +293,26 @@ struct EventMessage {
 
 pub(crate) struct StreamAcc {
     tool: bool,
+    tool_called: bool,
     content: String,
+    // a tool plan's prose answer, used when no tool call came, as in
+    // `response`
+    text: String,
     usage: Usage,
     stop_reason: Option<String>,
+    error: Option<String>,
 }
 
 impl StreamAcc {
     pub(crate) fn new(r: &Req<'_>) -> Self {
         Self {
             tool: matches!(plan(r), Plan::Tool { .. }),
+            tool_called: false,
             content: String::new(),
+            text: String::new(),
             usage: Usage::default(),
             stop_reason: None,
+            error: None,
         }
     }
 
@@ -332,12 +326,21 @@ impl StreamAcc {
                     u.input(&mut self.usage);
                 }
             }
+            "content_block_start" => {
+                if event.content_block.is_some_and(|b| b.kind == "tool_use") {
+                    self.tool_called = true;
+                }
+            }
             // text modes stream `text_delta`, a tool `input_json_delta`
             "content_block_delta" => {
                 let Some(delta) = event.delta else { return };
                 let piece = match (self.tool, delta.kind.as_deref()) {
                     (false, Some("text_delta")) => delta.text,
                     (true, Some("input_json_delta")) => delta.partial_json,
+                    (true, Some("text_delta")) => {
+                        self.text.push_str(delta.text.as_deref().unwrap_or(""));
+                        None
+                    }
                     _ => None,
                 };
                 if let Some(p) = piece {
@@ -347,17 +350,28 @@ impl StreamAcc {
             }
             "message_delta" => {
                 if let Some(u) = event.usage {
-                    self.usage.output_tokens = u.output_tokens;
+                    u.output(&mut self.usage);
                 }
                 if let Some(r) = event.delta.and_then(|d| d.stop_reason) {
                     self.stop_reason = Some(r.into_owned());
                 }
             }
+            // sent instead of an http error once the stream has started,
+            // e.g. `overloaded_error`
+            "error" => self.error = Some(data.to_owned()),
             _ => {}
         }
     }
 
     pub(crate) fn finish(self) -> Result<Answer, Fail> {
-        finish(self.content, self.usage, self.stop_reason.as_deref())
+        if let Some(e) = self.error {
+            return Err(Fail::Api(e));
+        }
+        let content = if self.tool && !self.tool_called {
+            self.text
+        } else {
+            self.content
+        };
+        finish(content, self.usage, self.stop_reason.as_deref())
     }
 }

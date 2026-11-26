@@ -385,3 +385,106 @@ fn responses_answers() {
     assert_eq!(seen, a.content);
     assert_eq!(a.usage.total_tokens(), 3);
 }
+
+#[test]
+fn cache_writes_and_thinking_tokens() {
+    let m = [Message::user("x")];
+    let r = req(&m, OutputMode::Schema, None);
+    let resp = json!({"choices": [{"message": {"content": "{}"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2,
+                  "prompt_tokens_details": {"cached_tokens": 3, "cache_write_tokens": 5}}});
+    let a = chat(Host::OpenAi)
+        .response(&r, resp.to_string().as_bytes())
+        .unwrap();
+    assert_eq!(
+        (a.usage.cached_input_tokens, a.usage.cache_write_tokens),
+        (3, 5)
+    );
+    let resp = json!({"status": "completed", "output": [],
+        "usage": {"input_tokens": 10, "output_tokens": 2,
+                  "input_tokens_details": {"cached_tokens": 3, "cache_write_tokens": 5}}});
+    let a = provider(Wire::OpenAiResponses)
+        .response(&r, resp.to_string().as_bytes())
+        .unwrap();
+    assert_eq!(a.usage.cache_write_tokens, 5);
+    let p = provider(Wire::Anthropic);
+    let resp = json!({"content": [{"type": "text", "text": "{}"}], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 4, "output_tokens": 30,
+                  "output_tokens_details": {"thinking_tokens": 20}}});
+    let a = p.response(&r, resp.to_string().as_bytes()).unwrap();
+    assert_eq!((a.usage.output_tokens, a.usage.reasoning_tokens), (30, 20));
+    let mut s = p.stream(&r);
+    for e in [
+        r#"{"type":"message_start","message":{"usage":{"input_tokens":4,"output_tokens":1}}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{}"}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":30,"output_tokens_details":{"thinking_tokens":20}}}"#,
+    ] {
+        s.event(e, &mut |_| {});
+    }
+    let a = s.finish().unwrap();
+    assert_eq!((a.usage.output_tokens, a.usage.reasoning_tokens), (30, 20));
+}
+
+#[test]
+fn errors_inside_a_stream() {
+    let m = [Message::user("x")];
+    let r = req(&m, OutputMode::Schema, None);
+    let cases = [
+        (
+            chat(Host::OpenAi),
+            r#"{"error":{"message":"overloaded","type":"server_error"}}"#,
+        ),
+        (
+            provider(Wire::Anthropic),
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        ),
+        (
+            provider(Wire::OpenAiResponses),
+            r#"{"type":"error","code":"server_error","message":"boom","param":null,"sequence_number":3}"#,
+        ),
+        (
+            provider(Wire::OpenAiResponses),
+            r#"{"type":"response.failed","response":{"status":"failed","output":[],"error":{"code":"server_error","message":"boom"}}}"#,
+        ),
+    ];
+    for (p, error) in cases {
+        let mut s = p.stream(&r);
+        s.event(
+            r#"{"type":"response.output_text.delta","delta":"{"}"#,
+            &mut |_| {},
+        );
+        s.event(error, &mut |_| {});
+        match s.finish() {
+            Err(Fail::Api(m)) => assert!(
+                m.contains("server_error") || m.contains("overloaded_error"),
+                "{m}"
+            ),
+            other => panic!("{}: {other:?}", p.name()),
+        }
+    }
+    let resp = json!({"status": "failed", "output": [], "error": {"code": "server_error", "message": "boom"}});
+    assert!(matches!(
+        provider(Wire::OpenAiResponses).response(&r, resp.to_string().as_bytes()),
+        Err(Fail::Api(m)) if m.contains("boom")
+    ));
+}
+
+#[test]
+fn anthropic_streamed_tool_plan_keeps_the_prose_fallback() {
+    let m = [Message::user("x")];
+    let r = req(&m, OutputMode::Tool, Some(Reasoning::Off));
+    let p = provider(Wire::Anthropic);
+    let run = |events: &[&str]| {
+        let mut s = p.stream(&r);
+        let mut seen = String::new();
+        events
+            .iter()
+            .for_each(|e| s.event(e, &mut |d| seen.push_str(d)));
+        (s.finish().unwrap().content, seen)
+    };
+    let text = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I think..."}}"#;
+    assert_eq!(run(&[text]), ("I think...".into(), String::new()));
+    let start = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"extract","input":{}}}"#;
+    let json = r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#;
+    assert_eq!(run(&[text, start, json]), ("{}".into(), "{}".into()));
+}

@@ -10,13 +10,13 @@ pub struct Usage {
     /// `cached_tokens`, Anthropic `cache_read_input_tokens`, Gemini
     /// `cachedContentTokenCount`.
     pub cached_input_tokens: u64,
-    /// Input tokens written to the prompt cache (Anthropic
-    /// `cache_creation_input_tokens`).
+    /// Input tokens written to the prompt cache: Anthropic
+    /// `cache_creation_input_tokens`, OpenAI `cache_write_tokens`.
     pub cache_write_tokens: u64,
     /// All output tokens, reasoning included.
     pub output_tokens: u64,
-    /// Output tokens spent on reasoning: OpenAI `reasoning_tokens`, Gemini
-    /// `thoughtsTokenCount`.
+    /// Output tokens spent on reasoning: OpenAI `reasoning_tokens`, Anthropic
+    /// `thinking_tokens`, Gemini `thoughtsTokenCount`.
     pub reasoning_tokens: u64,
     /// Responses from the model: answers, including rejected ones, and
     /// refusals. HTTP errors are not counted.

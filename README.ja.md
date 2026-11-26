@@ -161,7 +161,7 @@ let all: Vec<Entity> = client
 
 | 状況 | 返るもの |
 |---|---|
-| HTTP の再試行を使い切っても 2xx 以外のステータスが返った | `Error::Api { status, message, retry_after, .. }` |
+| HTTP の再試行を使い切っても 2xx 以外のステータスが返った、またはストリームの途中でエラーが届いた | `Error::Api { status, message, retry_after, .. }` |
 | 接続に失敗した | `Error::Transport { source, .. }` |
 | どの回答もパースできなかった、または検証に通らなかった | `Error::Parse { attempts, raw, .. }` または `Error::Validation { .. }` |
 | モデルが回答を拒否した（OpenAI の `refusal`、Anthropic の `stop_reason: refusal`、Gemini の安全性による停止）| `Error::Refusal { text, .. }`。再試行しない |
