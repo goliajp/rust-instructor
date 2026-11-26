@@ -29,6 +29,11 @@
   rejected answer's message names the place, such as
   `/counts/1: a repeated key "a"`, and points into the answer as received.
   Integers keep every digit as before.
+- `JsonError` is one pointer wide, its fields allocated only when an error
+  is built, so every `Result` on the reading path stays small. On an Apple
+  M4 Pro, reading one streamed chunk envelope took 167 / 169 ns, against
+  184 / 185 ns in 2.0, and the 1,247-byte `Invoice` 1,217 / 1,236 ns,
+  against 1,310 / 1,343 ns.
 - Gemini: a required field that holds a list or a map of a recursive type
   (such as `children: Vec<Node>`) is optional in the Gemini schema, as
   Gemini's structured output guide asks for recursive references, and an
