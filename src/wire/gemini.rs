@@ -106,11 +106,17 @@ pub(crate) fn request(p: &Provider, r: &Req<'_>) -> Result<HttpRequest, Fail> {
         "maxOutputTokens",
         r.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).into(),
     );
+    // `responseFormat.text` is what the REST reference documents;
+    // `responseMimeType` and `responseJsonSchema` are marked deprecated
     if r.mode != OutputMode::Prompt {
-        g.str("responseMimeType", "application/json");
-    }
-    if r.mode == OutputMode::Schema {
-        g.raw("responseJsonSchema", r.schema.get(Dialect::GeminiJson));
+        let mut rf = Obj::new(g.key("responseFormat"));
+        let mut t = Obj::new(rf.key("text"));
+        t.str("mimeType", "APPLICATION_JSON");
+        if r.mode == OutputMode::Schema {
+            t.raw("schema", r.schema.get(Dialect::GeminiJson));
+        }
+        t.end();
+        rf.end();
     }
     thinking(&mut g, r.reasoning);
     g.end();
@@ -238,7 +244,11 @@ impl StreamAcc {
             return Err(Fail::Refusal(format!("prompt blocked: {b}"), self.usage));
         }
         let stop = match self.finish_reason.as_deref() {
-            Some("MAX_TOKENS") => Stop::Truncated("finishReason: MAX_TOKENS".into()),
+            // CONTINUATION: the per-request limit was reached and the answer
+            // is not complete
+            Some(r @ ("MAX_TOKENS" | "CONTINUATION")) => {
+                Stop::Truncated(format!("finishReason: {r}"))
+            }
             Some(
                 r @ ("SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII"
                 | "IMAGE_SAFETY"),

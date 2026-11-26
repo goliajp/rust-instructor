@@ -67,9 +67,11 @@ The derive is built on `syn` 3 with exactly the features `serde_derive` uses, so
 | `Client::openai(key)` | OpenAI Chat Completions | `response_format` with a strict `json_schema` |
 | `Client::openai(key).with_api(OpenAiApi::Responses)` | OpenAI Responses | `text.format` with a strict `json_schema` |
 | `Client::openai_compatible(key, url)` | Chat Completions | strict `json_schema`; JSON mode for DeepSeek, Qwen and GLM hosts |
+| `Client::deepseek(key)` | DeepSeek Chat Completions | JSON mode (`response_format: json_object`) |
+| `Client::qwen(key)` | Qwen, Model Studio OpenAI-compatible mode (Singapore) | JSON mode |
 | `Client::anthropic(key)` | Anthropic Messages | `output_config.format` (structured output) |
 | `Client::anthropic_compatible(key, url)` | same | a tool with forced `tool_choice` |
-| `Client::gemini(key)`, `gemini_compatible(key, url)` | Gemini `generateContent` | `generationConfig.responseJsonSchema` |
+| `Client::gemini(key)`, `gemini_compatible(key, url)` | Gemini `generateContent` | `generationConfig.responseFormat.text` with a JSON Schema |
 
 `with_output_mode` changes how the schema is sent:
 
@@ -82,13 +84,19 @@ The derive is built on `syn` 3 with exactly the features `serde_derive` uses, so
 
 `openai_compatible` reads the host of the base URL: `api.openai.com` gets `max_completion_tokens`; DeepSeek (`deepseek.com`), Qwen (`aliyuncs.com`), Kimi (`moonshot.cn`, `moonshot.ai`, `kimi.ai`, `kimi.com`) and GLM (`bigmodel.cn`, `z.ai`) get their own [reasoning parameters](#reasoning). DeepSeek, Qwen and GLM default to `JsonObject`, because their documentation describes JSON mode and not strict schemas; any other host is treated as a generic OpenAI-compatible server and gets `Schema`.
 
-A type that refers to itself (a tree, a linked list) is sent with `$defs` and `$ref`. Anthropic structured output cannot express recursion, so for such a type the Anthropic request uses a tool with `tool_choice: auto`.
+A type that refers to itself (a tree, a linked list) is sent with `$defs` and `$ref`. Anthropic structured output cannot express recursion, so for such a type the Anthropic request uses a tool. Gemini unrolls a recursive reference only a few levels and documents it for properties that are not required; a required recursive field such as `children: Vec<Node>` is sent as is and may be rejected or cut short there.
+
+OpenAI strict schemas and Anthropic structured output take a subset of JSON Schema, so the crate sends some types in another form and turns the answer back before it reaches your type: a map (`HashMap`, `BTreeMap`) goes as a list of `{"key": .., "value": ..}` objects, a tuple as an object with the keys `"0"`, `"1"`, …, and a type whose JSON is not an object (an enum, a `Vec`, a number) inside `{"value": ..}`. Constraints the provider does not take (`uniqueItems` everywhere; `minLength` and `maxLength` on OpenAI; bounds and `maxItems` on Anthropic) are left out of its schema and checked on the answer, and an answer that breaks one is asked again like any other invalid answer. `on_item` and the final value always see your type's own JSON; `on_partial` sees the root unwrapped, but maps and tuples inside it in the sent form.
+
+Anthropic models without structured output (Claude 3, Claude Opus 4 and 4.1, Claude Sonnet 4) get the tool instead; any other model, including ones newer than the crate, gets `output_config.format`. Claude Opus 5.5, Sonnet 5.5, Fable 5.1 and 5.2 and Mythos 5.1 and 5.2 reject a forced tool, so on those models, and whenever thinking is on, the tool is offered with `tool_choice: auto` and the system prompt asks for the call. DeepSeek and Qwen reject a forced tool in thinking mode, which their current models use by default, so their `Tool` mode does the same unless reasoning is `Off`. Qwen's OpenAI-compatible mode takes no PDF, so `Part::document` returns `Error::Unsupported` there before anything is sent.
 
 Default models, used when none is set:
 
 | Provider | Default |
 |---|---|
 | OpenAI and OpenAI-compatible | `gpt-5.6-terra` |
+| DeepSeek (`deepseek.com` hosts) | `deepseek-flash` |
+| Qwen (`aliyuncs.com` hosts) | `qwen3.7-plus` |
 | Anthropic | `claude-sonnet-5` |
 | Gemini | `gemini-3.6-flash` |
 
@@ -123,7 +131,7 @@ Nothing is sent unless it is set. Each provider gets its own parameter:
 
 The crate keeps no list of which model accepts which value. A value the model rejects comes back as `Error::Api` with the provider's message. Some examples from the providers' documentation as of November 2026: Claude Opus 5.5 rejects `thinking: disabled` and `budget_tokens`; Claude Sonnet 5.5 rejects `thinking: disabled`; Gemini 4 models cannot turn thinking off.
 
-On Anthropic, a forced tool call cannot be combined with thinking, so when a reasoning setting is present the tool path (`OutputMode::Tool`, the default of `anthropic_compatible`, or a recursive type) uses `tool_choice: auto`.
+On Anthropic, a forced tool call cannot be combined with thinking, so with `Effort` or `Budget` the tool path (`OutputMode::Tool`, the default of `anthropic_compatible`, or a recursive type) uses `tool_choice: auto`; with `Off` the tool is forced where the model allows it.
 
 Thinking tokens are billed as output. They are included in `usage.output_tokens` and the cost estimate for all three protocols.
 
@@ -221,7 +229,7 @@ let client = Client::openai("sk-...")
     .with_timeout(Duration::from_secs(120)); // the whole extraction
 ```
 
-HTTP retries are on by default: 3 retries on 408, 429, 500, 502, 503, 504, 529 and connection errors, waiting 500 ms doubling up to 30 s with jitter, or what the provider's `Retry-After` / `retry-after-ms` header says. `RetryPolicy::none()` turns them off. A fallback is tried after the primary provider has failed, with the fallback client's own model, output mode and transport.
+HTTP retries are on by default: 3 retries on 408, 409, 429, 500, 502, 503, 504, 529 and connection errors, waiting 500 ms doubling up to 30 s with jitter, or what the provider's `retry-after-ms` / `Retry-After` header says (seconds, or an HTTP date counted from the response's `Date` header). An `x-should-retry: true` or `false` header, which OpenAI and Anthropic send, overrides the status. `RetryPolicy::none()` turns them off. A fallback is tried after the primary provider has failed, with the fallback client's own model, output mode and transport.
 
 ## Without a runtime, or with your own HTTP client
 
@@ -278,7 +286,7 @@ let r: Contact = client
 | Setting | OpenAI family | Anthropic | Gemini |
 |---|---|---|---|
 | max tokens | `max_completion_tokens` (OpenAI), `max_output_tokens` (Responses) or `max_tokens` (compatible); not sent unless set | `max_tokens`, 16384 unless set | `maxOutputTokens`, 16384 unless set |
-| temperature | sent; 0.0 by default | never sent: current Claude models reject a non-default value | sent when set |
+| temperature | sent when set | never sent: current Claude models reject a non-default value | sent when set |
 
 ## Cost
 

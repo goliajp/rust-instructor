@@ -184,20 +184,56 @@ fn normalize(v: &mut Value) {
     }
 }
 
-/// Gemini: 1.5 sent the OpenAPI-subset `responseSchema` unless the type was
-/// recursive; 2.0 always sends `responseJsonSchema`.
+/// Gemini: 1.5 sent `responseMimeType` with the OpenAPI-subset
+/// `responseSchema` (or `responseJsonSchema` for a recursive type); 2.0
+/// sends `responseFormat.text` with JSON Schema. The schemas themselves are
+/// compared in the schema tests.
 fn gemini_schema_key(old: &mut Captured, new: &mut Captured) {
-    let (Some(o), Some(n)) = (
+    let (Some(Value::Object(o)), Some(Value::Object(n))) = (
         old.body.get_mut("generationConfig"),
         new.body.get_mut("generationConfig"),
     ) else {
         return;
     };
-    if let Some(Value::Object(o)) = Some(o)
-        && o.remove("responseSchema").is_some()
-        && let Value::Object(n) = n
+    let Some(mime) = o.remove("responseMimeType") else {
+        assert!(n.get("responseFormat").is_none());
+        return;
+    };
+    assert_eq!(mime, "application/json");
+    let mut format = n
+        .remove("responseFormat")
+        .expect("2.0 sends responseFormat");
+    assert_eq!(format["text"]["mimeType"], "APPLICATION_JSON");
+    let old_schema = o
+        .remove("responseSchema")
+        .or_else(|| o.remove("responseJsonSchema"));
+    let new_schema = format["text"].as_object_mut().unwrap().remove("schema");
+    assert_eq!(old_schema.is_some(), new_schema.is_some());
+}
+
+/// 1.5 sent `temperature: 0.0` to OpenAI-compatible APIs unless set; 2.0
+/// sends it only when set.
+fn default_temperature(old: &mut Captured, new: &Captured) {
+    if new.body.get("temperature").is_none()
+        && old.body.get("temperature") == Some(&Value::from(0.0))
+        && let Value::Object(o) = &mut old.body
     {
-        assert!(n.remove("responseJsonSchema").is_some());
+        o.remove("temperature");
+    }
+}
+
+/// Anthropic: 1.5 forced the tool only with no reasoning setting at all and
+/// never for a recursive type; 2.0 forces it whenever thinking is off and
+/// the model takes a forced tool, so the system prompt loses the hint.
+fn anthropic_forced_tool(old: &mut Captured, new: &Captured) {
+    let forced = serde_json::json!({"type": "tool", "name": "extract"});
+    if old.body.get("tool_choice") == Some(&serde_json::json!({"type": "auto"}))
+        && new.body.get("tool_choice") == Some(&forced)
+    {
+        old.body["tool_choice"] = forced;
+        let system = old.body["system"].as_str().unwrap();
+        let hint = " Answer by calling the `extract` tool.";
+        old.body["system"] = Value::from(system.strip_suffix(hint).unwrap());
     }
 }
 
@@ -215,6 +251,8 @@ fn compare(case: &str, old: Option<Captured>, new: Option<Captured>) {
         (o, n) => panic!("{case}: 1.5 sent {o:?}, 2.0 sent {n:?}"),
     };
     gemini_schema_key(&mut old, &mut new);
+    default_temperature(&mut old, &new);
+    anthropic_forced_tool(&mut old, &new);
     normalize(&mut old.body);
     normalize(&mut new.body);
     assert_eq!(old.path, new.path, "{case}");

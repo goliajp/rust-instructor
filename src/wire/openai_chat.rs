@@ -5,77 +5,19 @@ use std::borrow::Cow;
 use serde::Deserialize;
 
 mod content;
+mod host;
 
 use super::{
-    Answer, Arr, DEFAULT_SYSTEM, Fail, HttpRequest, Obj, OutputMode, Provider, Req, Stop, envelope,
-    json_headers, system_with_schema, type_obj,
+    Answer, Arr, DEFAULT_SYSTEM, Fail, HttpRequest, Obj, OutputMode, Provider, Req, Stop,
+    TOOL_HINT, envelope, json_headers, system_with_schema, type_obj,
 };
 use crate::json::Raw;
-use crate::message::Role;
+use crate::message::{Part, Role};
 use crate::reasoning::Reasoning;
 use crate::schema::Dialect;
 use crate::usage::Usage;
 use content::content;
-
-/// Which OpenAI-compatible API is on the other end, from the base URL host.
-/// It decides the output-limit field, the reasoning parameters and the
-/// default [`OutputMode`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Host {
-    OpenAi,
-    Generic,
-    DeepSeek,
-    Qwen,
-    Kimi,
-    Glm,
-}
-
-impl Host {
-    pub(crate) fn from_base_url(url: &str) -> Self {
-        let host = url
-            .split("://")
-            .nth(1)
-            .unwrap_or(url)
-            .split(['/', ':'])
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let is = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
-        if is("api.openai.com") {
-            Self::OpenAi
-        } else if is("deepseek.com") {
-            Self::DeepSeek
-        } else if is("aliyuncs.com") {
-            Self::Qwen
-        } else if is("moonshot.cn") || is("moonshot.ai") || is("kimi.ai") || is("kimi.com") {
-            Self::Kimi
-        } else if is("bigmodel.cn") || is("z.ai") {
-            Self::Glm
-        } else {
-            Self::Generic
-        }
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::OpenAi => "openai",
-            Self::Generic => "openai-compatible",
-            Self::DeepSeek => "deepseek",
-            Self::Qwen => "qwen",
-            Self::Kimi => "kimi",
-            Self::Glm => "glm",
-        }
-    }
-
-    /// DeepSeek and GLM document only `json_object`; Qwen supports strict
-    /// schemas on some models only.
-    pub(crate) fn default_mode(self) -> OutputMode {
-        match self {
-            Self::DeepSeek | Self::Glm | Self::Qwen => OutputMode::JsonObject,
-            Self::OpenAi | Self::Generic | Self::Kimi => OutputMode::Schema,
-        }
-    }
-}
+pub(crate) use host::Host;
 
 fn reasoning(o: &mut Obj<'_>, host: Host, r: Option<Reasoning>) -> Result<(), Fail> {
     let Some(r) = r else { return Ok(()) };
@@ -109,12 +51,24 @@ fn reasoning(o: &mut Obj<'_>, host: Host, r: Option<Reasoning>) -> Result<(), Fa
 }
 
 pub(crate) fn request(p: &Provider, host: Host, r: &Req<'_>) -> Result<HttpRequest, Fail> {
+    if host == Host::Qwen
+        && r.messages
+            .iter()
+            .flat_map(|m| m.parts())
+            .any(|p| matches!(p, Part::Document { .. }))
+    {
+        return Err(Fail::Unsupported(
+            "documents in Qwen Chat Completions requests; send page images instead".into(),
+        ));
+    }
+    let forced = host.forced_tool(r.reasoning);
     let mut body = Vec::with_capacity(1024 + r.schema.get(Dialect::Strict).len());
     let mut o = Obj::new(&mut body);
     o.str("model", r.model);
     let base = r.system.unwrap_or(DEFAULT_SYSTEM);
     let system = match r.mode {
         OutputMode::JsonObject | OutputMode::Prompt => Cow::Owned(system_with_schema(base, r)),
+        OutputMode::Tool if !forced => Cow::Owned(format!("{base}{TOOL_HINT}")),
         OutputMode::Schema | OutputMode::Tool => Cow::Borrowed(base),
     };
     let mut msgs = Arr::new(o.key("messages"));
@@ -160,12 +114,16 @@ pub(crate) fn request(p: &Provider, host: Host, r: &Req<'_>) -> Result<HttpReque
             f.end();
             t.end();
             tools.end();
-            let mut tc = Obj::new(o.key("tool_choice"));
-            tc.str("type", "function");
-            let mut f = Obj::new(tc.key("function"));
-            f.str("name", "extract");
-            f.end();
-            tc.end();
+            if forced {
+                let mut tc = Obj::new(o.key("tool_choice"));
+                tc.str("type", "function");
+                let mut f = Obj::new(tc.key("function"));
+                f.str("name", "extract");
+                f.end();
+                tc.end();
+            } else {
+                o.str("tool_choice", "auto");
+            }
         }
         OutputMode::JsonObject => type_obj(o.key("response_format"), "json_object"),
         OutputMode::Prompt => {}

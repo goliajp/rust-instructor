@@ -111,7 +111,7 @@ fn bad_answer_is_shown_back_to_the_model() {
     assert_eq!(msgs[2]["content"], "{\"nom\": 1}");
     assert_eq!(msgs[3]["role"], "user");
     let turn = msgs[3]["content"].as_str().unwrap();
-    assert!(turn.contains("missing field `name`"), "{turn}");
+    assert!(turn.contains(r#"missing "name""#), "{turn}");
     ex.receive(200, &Headers::new(), &openai(OK));
     let out = done(&mut ex).unwrap();
     assert_eq!(out.usage.requests, 2);

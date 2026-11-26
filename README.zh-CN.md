@@ -67,9 +67,11 @@ struct Event {
 | `Client::openai(key)` | OpenAI Chat Completions | `response_format`，严格模式的 `json_schema` |
 | `Client::openai(key).with_api(OpenAiApi::Responses)` | OpenAI Responses | `text.format`，严格模式的 `json_schema` |
 | `Client::openai_compatible(key, url)` | Chat Completions | 严格模式的 `json_schema`；DeepSeek、通义千问、GLM 的地址用 JSON 模式 |
+| `Client::deepseek(key)` | DeepSeek Chat Completions | JSON 模式（`response_format: json_object`）|
+| `Client::qwen(key)` | 通义千问，阿里云百炼的 OpenAI 兼容模式（新加坡）| JSON 模式 |
 | `Client::anthropic(key)` | Anthropic Messages | `output_config.format`（结构化输出）|
 | `Client::anthropic_compatible(key, url)` | 同上 | 一个工具，`tool_choice` 强制调用 |
-| `Client::gemini(key)`、`gemini_compatible(key, url)` | Gemini `generateContent` | `generationConfig.responseJsonSchema` |
+| `Client::gemini(key)`、`gemini_compatible(key, url)` | Gemini `generateContent` | `generationConfig.responseFormat.text`，带 JSON Schema |
 
 `with_output_mode` 可以改变发送 schema 的方式：
 
@@ -82,13 +84,19 @@ struct Event {
 
 `openai_compatible` 会看 base URL 的主机名：`api.openai.com` 发 `max_completion_tokens`；DeepSeek（`deepseek.com`）、通义千问（`aliyuncs.com`）、Kimi（`moonshot.cn`、`moonshot.ai`、`kimi.ai`、`kimi.com`）和 GLM（`bigmodel.cn`、`z.ai`）各用自己的[思考参数](#思考深度)。DeepSeek、通义千问和 GLM 默认用 `JsonObject`，因为它们的文档只写了 JSON 模式，没有写严格 schema；其他主机按通用的 OpenAI 兼容接口处理，用 `Schema`。
 
-引用自身的类型（树、链表）用 `$defs` 和 `$ref` 发送。Anthropic 的结构化输出表达不了递归，所以这种类型发给 Anthropic 时改用工具，`tool_choice: auto`。
+引用自身的类型（树、链表）用 `$defs` 和 `$ref` 发送。Anthropic 的结构化输出表达不了递归，所以这种类型发给 Anthropic 时改用工具。Gemini 只把递归引用展开几层，文档里只说可以用在非必填的属性上。`children: Vec<Node>` 这样必填的递归字段会原样发送，Gemini 可能拒绝，也可能只生成到某一层。
+
+OpenAI 的严格模式 schema 和 Anthropic 的结构化输出只接受 JSON Schema 的一个子集，所以有些类型换一种形式发送，收到回答后先转回原来的形式，再交给你的类型。map（`HashMap`、`BTreeMap`）发成由 `{"key": .., "value": ..}` 对象组成的数组；元组发成以 `"0"`、`"1"`、… 为键的对象；JSON 不是对象的类型（enum、`Vec`、数字）包在 `{"value": ..}` 里。接口不接受的约束（两家都不接受 `uniqueItems`，OpenAI 不接受 `minLength` 和 `maxLength`，Anthropic 不接受取值范围和 `maxItems`）不写进发给它的 schema，改为收到回答后检查；违反约束的回答和其他不合格的回答一样，会再问一次。`on_item` 和最终结果拿到的总是你的类型自己的 JSON；`on_partial` 拿到的根已经去掉了外层包装，但里面的 map 和元组还是发送时的形式。
+
+没有结构化输出的 Anthropic 模型（Claude 3、Claude Opus 4 和 4.1、Claude Sonnet 4）改用工具；其他模型，包括比这个 crate 更新的模型，都发 `output_config.format`。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 和 5.2、Mythos 5.1 和 5.2 不接受强制调用工具，所以用这些模型时，以及开启思考时，用 `tool_choice: auto` 提供工具，并在系统提示里要求调用它。DeepSeek 和通义千问在思考模式下不接受强制调用工具，而它们现在的模型默认就是思考模式，所以除非 reasoning 设为 `Off`，`Tool` 模式也这样处理。通义千问的 OpenAI 兼容模式不接受 PDF，传 `Part::document` 时会在发送前返回 `Error::Unsupported`。
 
 不指定模型时的默认值：
 
 | 接口 | 默认模型 |
 |---|---|
 | OpenAI 及兼容接口 | `gpt-5.6-terra` |
+| DeepSeek（`deepseek.com` 的地址）| `deepseek-flash` |
+| 通义千问（`aliyuncs.com` 的地址）| `qwen3.7-plus` |
 | Anthropic | `claude-sonnet-5` |
 | Gemini | `gemini-3.6-flash` |
 
@@ -123,7 +131,7 @@ let r = client
 
 crate 不维护「哪个模型接受哪个值」的列表。模型不接受的值，会以 `Error::Api` 返回，内容是接口自己的错误信息。按各家 2026 年 11 月的文档举几个例子：Claude Opus 5.5 不接受 `thinking: disabled` 和 `budget_tokens`；Claude Sonnet 5.5 不接受 `thinking: disabled`；Gemini 4 系列不能关闭思考。
 
-Anthropic 的强制工具调用不能和思考同时使用，所以设置了思考参数时，走工具的请求（`OutputMode::Tool`，也就是 `anthropic_compatible` 的默认方式，或者递归类型）改用 `tool_choice: auto`。
+Anthropic 的强制工具调用不能和思考同时使用，所以设置了 `Effort` 或 `Budget` 时，走工具的请求（`OutputMode::Tool`，也就是 `anthropic_compatible` 的默认方式，或者递归类型）改用 `tool_choice: auto`；设为 `Off` 时，只要模型允许就强制调用工具。
 
 思考用的 token 按输出计费。三种协议都把它算进 `usage.output_tokens` 和费用估算。
 
@@ -221,7 +229,7 @@ let client = Client::openai("sk-...")
     .with_timeout(Duration::from_secs(120)); // the whole extraction
 ```
 
-HTTP 重试默认开启：遇到 408、429、500、502、503、504、529 和连接错误时最多重试 3 次，等待时间从 500 ms 开始翻倍，最多 30 s，带随机抖动；接口返回了 `Retry-After` 或 `retry-after-ms` 请求头时按它等。`RetryPolicy::none()` 关闭重试。主接口失败后才会尝试备用接口，备用接口用它自己的模型、输出方式和 transport。
+HTTP 重试默认开启：遇到 408、409、429、500、502、503、504、529 和连接错误时最多重试 3 次，等待时间从 500 ms 开始翻倍，最多 30 s，带随机抖动；接口返回了 `retry-after-ms` 或 `Retry-After` 响应头时按它等。`Retry-After` 可以是秒数，也可以是 HTTP 日期，日期从响应的 `Date` 头开始算。OpenAI 和 Anthropic 会返回 `x-should-retry: true` 或 `false` 响应头，有这个头时以它为准，不看状态码。`RetryPolicy::none()` 关闭重试。主接口失败后才会尝试备用接口，备用接口用它自己的模型、输出方式和 transport。
 
 ## 不用运行时，或者用自己的 HTTP 客户端
 
@@ -278,7 +286,7 @@ let r: Contact = client
 | 设置 | OpenAI 系 | Anthropic | Gemini |
 |---|---|---|---|
 | 最大输出 token 数 | OpenAI 发 `max_completion_tokens`，Responses API 发 `max_output_tokens`，兼容接口发 `max_tokens`；不设置就不发 | `max_tokens`，不设置时为 16384 | `maxOutputTokens`，不设置时为 16384 |
-| temperature | 发送，默认 0.0 | 从不发送：现在的 Claude 模型不接受非默认值 | 设置了才发送 |
+| temperature | 设置了才发送 | 从不发送：现在的 Claude 模型不接受非默认值 | 设置了才发送 |
 
 ## 费用
 

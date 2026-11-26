@@ -67,9 +67,11 @@ derive は `syn` 3 の上に作っていて、有効にしている feature は 
 | `Client::openai(key)` | OpenAI Chat Completions | `response_format` で strict な `json_schema` |
 | `Client::openai(key).with_api(OpenAiApi::Responses)` | OpenAI Responses | `text.format` で strict な `json_schema` |
 | `Client::openai_compatible(key, url)` | Chat Completions | strict な `json_schema`。DeepSeek、Qwen、GLM のホストでは JSON モード |
+| `Client::deepseek(key)` | DeepSeek Chat Completions | JSON モード（`response_format: json_object`）|
+| `Client::qwen(key)` | Qwen（Model Studio の OpenAI 互換モード、シンガポール）| JSON モード |
 | `Client::anthropic(key)` | Anthropic Messages | `output_config.format`（構造化出力）|
 | `Client::anthropic_compatible(key, url)` | 同上 | ツール 1 つを `tool_choice` で強制 |
-| `Client::gemini(key)`、`gemini_compatible(key, url)` | Gemini `generateContent` | `generationConfig.responseJsonSchema` |
+| `Client::gemini(key)`、`gemini_compatible(key, url)` | Gemini `generateContent` | `generationConfig.responseFormat.text` に JSON Schema |
 
 スキーマの送り方は `with_output_mode` で変えられます。
 
@@ -82,13 +84,19 @@ derive は `syn` 3 の上に作っていて、有効にしている feature は 
 
 `openai_compatible` はベース URL のホスト名を見ます。`api.openai.com` には `max_completion_tokens` を送り、DeepSeek（`deepseek.com`）、Qwen（`aliyuncs.com`）、Kimi（`moonshot.cn`、`moonshot.ai`、`kimi.ai`、`kimi.com`）、GLM（`bigmodel.cn`、`z.ai`）にはそれぞれの[思考パラメーター](#思考の深さ)を送ります。DeepSeek、Qwen、GLM のデフォルトは `JsonObject` です。これらのドキュメントには JSON モードの説明があり、strict なスキーマの説明はないためです。それ以外のホストは一般的な OpenAI 互換サーバーとして扱い、`Schema` を使います。
 
-自分自身を含む型（木構造や連結リスト）は `$defs` と `$ref` を使って送ります。Anthropic の構造化出力は再帰を表現できないので、そうした型では Anthropic へのリクエストにツールを使い、`tool_choice: auto` を送ります。
+自分自身を含む型（木構造や連結リスト）は `$defs` と `$ref` を使って送ります。Anthropic の構造化出力は再帰を表現できないので、そうした型では Anthropic へのリクエストにツールを使います。Gemini は再帰参照を数段までしか展開せず、ドキュメントでは必須でないプロパティでの使用だけを想定しています。`children: Vec<Node>` のような必須の再帰フィールドはそのまま送るので、Gemini では拒否されたり、途中で打ち切られたりすることがあります。
+
+OpenAI の strict なスキーマと Anthropic の構造化出力は JSON Schema の一部しか受け付けません。そこで一部の型は別の形で送り、回答を元の形に戻してから型に渡します。マップ（`HashMap`、`BTreeMap`）は `{"key": .., "value": ..}` オブジェクトの配列に、タプルは `"0"`、`"1"`、… をキーとするオブジェクトにします。JSON がオブジェクトでない型（enum、`Vec`、数値など）は `{"value": ..}` で包みます。プロバイダーが受け付けない制約（どちらでも `uniqueItems`、OpenAI では `minLength` と `maxLength`、Anthropic では値の範囲と `maxItems`）はスキーマから外し、回答を受け取ってから確認します。制約に反する回答は、ほかの不正な回答と同じように聞き直します。`on_item` と最終的な値は常に元の型の JSON です。`on_partial` には包みを外したルートを渡しますが、その中のマップとタプルは送ったときの形のままです。
+
+構造化出力のない Anthropic のモデル（Claude 3、Claude Opus 4 と 4.1、Claude Sonnet 4）にはツールを使います。それ以外のモデルには、このクレートより新しいものも含めて `output_config.format` を送ります。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 と 5.2、Mythos 5.1 と 5.2 はツールの強制を拒否します。これらのモデルと、思考がオンのときは、`tool_choice: auto` でツールを提示し、システムプロンプトで呼び出しを頼みます。DeepSeek と Qwen は思考モードでツールの強制を拒否し、現行モデルはデフォルトで思考モードなので、reasoning が `Off` でない限り `Tool` モードでも同じようにします。Qwen の OpenAI 互換モードは PDF を受け付けないので、`Part::document` を渡すと送信前に `Error::Unsupported` を返します。
 
 モデルを指定しなかったときのデフォルト：
 
 | プロバイダー | デフォルト |
 |---|---|
 | OpenAI と OpenAI 互換 | `gpt-5.6-terra` |
+| DeepSeek（`deepseek.com` のホスト）| `deepseek-flash` |
+| Qwen（`aliyuncs.com` のホスト）| `qwen3.7-plus` |
 | Anthropic | `claude-sonnet-5` |
 | Gemini | `gemini-3.6-flash` |
 
@@ -123,7 +131,7 @@ let r = client
 
 どのモデルがどの値を受け付けるかの一覧は持っていません。モデルが受け付けない値を送ると、プロバイダーのエラーメッセージがそのまま `Error::Api` で返ります。2026 年 11 月時点の各社ドキュメントによると、たとえば Claude Opus 5.5 は `thinking: disabled` と `budget_tokens` を、Claude Sonnet 5.5 は `thinking: disabled` を拒否し、Gemini 4 系は思考をオフにできません。
 
-Anthropic では強制ツール呼び出しと思考を同時に使えません。そのため思考の設定があるときは、ツールを使う経路（`anthropic_compatible` のデフォルトである `OutputMode::Tool` や再帰型）で `tool_choice: auto` を送ります。
+Anthropic では強制ツール呼び出しと思考を同時に使えません。そのため `Effort` か `Budget` を設定したときは、ツールを使う経路（`anthropic_compatible` のデフォルトである `OutputMode::Tool` や再帰型）で `tool_choice: auto` を送ります。`Off` のときは、モデルが許せばツールを強制します。
 
 思考に使われたトークンは出力として課金されます。3 つのプロトコルとも、`usage.output_tokens` と費用の見積もりに含めています。
 
@@ -221,7 +229,7 @@ let client = Client::openai("sk-...")
     .with_timeout(Duration::from_secs(120)); // the whole extraction
 ```
 
-HTTP の再試行はデフォルトで有効です。408、429、500、502、503、504、529 と接続エラーで最大 3 回再試行し、待ち時間は 500 ms から倍々に増やして最大 30 s、ランダムな揺らぎを加えます。プロバイダーが `Retry-After` か `retry-after-ms` ヘッダーを返したときはその値だけ待ちます。`RetryPolicy::none()` で無効にできます。フォールバックはメインのプロバイダーが失敗した後に試し、フォールバック側のクライアントのモデル、出力モード、トランスポートを使います。
+HTTP の再試行はデフォルトで有効です。408、409、429、500、502、503、504、529 と接続エラーで最大 3 回再試行し、待ち時間は 500 ms から倍々に増やして最大 30 s、ランダムな揺らぎを加えます。プロバイダーが `retry-after-ms` か `Retry-After` ヘッダーを返したときはその値だけ待ちます。`Retry-After` は秒数のほか HTTP の日付でもよく、日付はレスポンスの `Date` ヘッダーからの差で数えます。OpenAI と Anthropic が返す `x-should-retry: true` / `false` ヘッダーがあれば、ステータスより優先します。`RetryPolicy::none()` で無効にできます。フォールバックはメインのプロバイダーが失敗した後に試し、フォールバック側のクライアントのモデル、出力モード、トランスポートを使います。
 
 ## ランタイムなしで、または自前の HTTP クライアントで使う
 
@@ -278,7 +286,7 @@ let r: Contact = client
 | 設定 | OpenAI 系 | Anthropic | Gemini |
 |---|---|---|---|
 | 最大出力トークン数 | OpenAI には `max_completion_tokens`、Responses API には `max_output_tokens`、互換 API には `max_tokens`。設定しなければ送らない | `max_tokens`。未設定なら 16384 | `maxOutputTokens`。未設定なら 16384 |
-| temperature | 送る。デフォルトは 0.0 | 送らない。現行の Claude はデフォルト以外の値を拒否する | 設定したときだけ送る |
+| temperature | 設定したときだけ送る | 送らない。現行の Claude はデフォルト以外の値を拒否する | 設定したときだけ送る |
 
 ## 費用
 

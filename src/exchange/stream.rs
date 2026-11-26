@@ -2,6 +2,7 @@
 
 use super::{Exchange, Hooks, State};
 use crate::partial::PartialParser;
+use crate::schema::SchemaEntry;
 use crate::sse::SseDecoder;
 use crate::wire::{Headers, Stream};
 use serde::de::DeserializeOwned;
@@ -18,17 +19,21 @@ pub(super) struct Sse {
     pub(super) acc: Stream,
     pub(super) parser: PartialParser,
     pub(super) delivered: usize,
+    // the answer is in a strict schema's wire form
+    pub(super) strict: bool,
 }
 
 impl<O: DeserializeOwned> Exchange<O> {
     /// The status and headers of a response whose body follows in chunks.
     pub fn receive_head(&mut self, status: u16, headers: &Headers) {
         let ok = (200..300).contains(&status);
+        let provider = &self.spec.targets[self.idx].provider;
         let sse = (ok && self.spec.hooks.streaming()).then(|| Sse {
             decoder: SseDecoder::default(),
-            acc: self.spec.targets[self.idx].provider.stream(&self.req()),
+            acc: provider.stream(&self.req()),
             parser: PartialParser::new(),
             delivered: 0,
+            strict: provider.strict_schema(&self.req()),
         });
         self.inbound = Some(Inbound {
             status,
@@ -45,18 +50,21 @@ impl<O: DeserializeOwned> Exchange<O> {
             inb.buf.extend_from_slice(bytes);
             return;
         };
-        let hooks = &self.spec.hooks;
-        let list = self.spec.list;
+        let view = View {
+            hooks: &self.spec.hooks,
+            list: self.spec.list,
+            schema: self.spec.schema,
+            strict: sse.strict,
+        };
         let Sse {
             decoder,
             acc,
             parser,
             delivered,
+            ..
         } = sse;
         decoder.feed(bytes, |data| {
-            acc.event(data, &mut |delta| {
-                on_delta(hooks, list, parser, delivered, delta)
-            });
+            acc.event(data, &mut |delta| view.delta(parser, delivered, delta));
         });
     }
 
@@ -72,18 +80,21 @@ impl<O: DeserializeOwned> Exchange<O> {
         }
         let answer = match inb.sse {
             Some(mut sse) => {
-                let hooks = &self.spec.hooks;
-                let list = self.spec.list;
+                let view = View {
+                    hooks: &self.spec.hooks,
+                    list: self.spec.list,
+                    schema: self.spec.schema,
+                    strict: sse.strict,
+                };
                 let Sse {
                     decoder,
                     acc,
                     parser,
                     delivered,
+                    ..
                 } = &mut sse;
                 decoder.finish(|data| {
-                    acc.event(data, &mut |delta| {
-                        on_delta(hooks, list, parser, delivered, delta)
-                    });
+                    acc.event(data, &mut |delta| view.delta(parser, delivered, delta));
                 });
                 sse.acc.finish()
             }
@@ -95,37 +106,54 @@ impl<O: DeserializeOwned> Exchange<O> {
     }
 }
 
-fn on_delta(
-    hooks: &Hooks,
+/// What the streaming hooks see of the answer so far.
+struct View<'a> {
+    hooks: &'a Hooks,
     list: bool,
-    parser: &mut PartialParser,
-    delivered: &mut usize,
-    delta: &str,
-) {
-    if let Some(h) = &hooks.on_delta {
-        h(delta);
-    }
-    if hooks.on_partial.is_none() && hooks.on_item.is_none() {
-        return;
-    }
-    parser.feed(delta);
-    let Some(root) = parser.root() else { return };
-    if let Some(h) = &hooks.on_partial {
-        let view = if list { root.get("items") } else { Some(root) };
-        if let Some(v) = view {
-            h(v);
+    schema: &'static SchemaEntry,
+    strict: bool,
+}
+
+impl View<'_> {
+    fn delta(&self, parser: &mut PartialParser, delivered: &mut usize, delta: &str) {
+        let hooks = self.hooks;
+        if let Some(h) = &hooks.on_delta {
+            h(delta);
         }
-    }
-    if let Some(h) = &hooks.on_item {
-        let Some(items) = root.get("items").or(Some(root)) else {
+        if hooks.on_partial.is_none() && hooks.on_item.is_none() {
             return;
-        };
-        for item in items.items().skip(*delivered) {
-            if !item.is_complete() {
-                break;
+        }
+        parser.feed(delta);
+        let Some(root) = parser.root() else { return };
+        if let Some(h) = &hooks.on_partial {
+            // a strict schema wraps a root that is not an object
+            let view = if self.list {
+                root.get("items")
+            } else if self.strict && self.schema.wrapped() {
+                root.get("value")
+            } else {
+                Some(root)
+            };
+            if let Some(v) = view {
+                h(v);
             }
-            h(&item.to_json());
-            *delivered += 1;
+        }
+        if let Some(h) = &hooks.on_item {
+            let Some(items) = root.get("items").or(Some(root)) else {
+                return;
+            };
+            for item in items.items().skip(*delivered) {
+                if !item.is_complete() {
+                    break;
+                }
+                let json = item.to_json();
+                if !self.strict {
+                    h(&json);
+                } else if let Ok(own) = self.schema.unwire_item(&json) {
+                    h(&own);
+                }
+                *delivered += 1;
+            }
         }
     }
 }

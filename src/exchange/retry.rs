@@ -3,13 +3,15 @@ use std::time::Duration;
 
 use crate::wire::Headers;
 
-/// When to resend a request that failed at the HTTP level: 408, 429, 500,
-/// 502, 503, 504, 529 and connection errors. On by default.
+/// When to resend a request that failed at the HTTP level: 408, 409, 429,
+/// 500, 502, 503, 504, 529 and connection errors. On by default. An
+/// `x-should-retry: true` or `false` response header overrides the status.
 ///
 /// The delay is `base_delay * 2^n`, capped at `max_delay`, times a random
-/// factor in `[0.5, 1)` when `jitter` is on. A `Retry-After` header (seconds)
-/// or `retry-after-ms` from the provider replaces the computed delay, up to
-/// `max_delay`.
+/// factor in `[0.5, 1)` when `jitter` is on. A `retry-after-ms` or
+/// `Retry-After` header from the provider replaces the computed delay, up to
+/// `max_delay`. A `Retry-After` date is counted from the response's `Date`
+/// header, so the client's clock is never read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetryPolicy {
     pub(crate) max_retries: u32,
@@ -80,9 +82,18 @@ impl RetryPolicy {
     }
 }
 
-pub(crate) const RETRYABLE: [u16; 7] = [408, 429, 500, 502, 503, 504, 529];
+const RETRYABLE: [u16; 8] = [408, 409, 429, 500, 502, 503, 504, 529];
 
-/// `retry-after-ms`, or `Retry-After` in seconds. An HTTP date is ignored.
+/// Whether a response with this status and these headers may be resent.
+pub(crate) fn retryable(status: u16, h: &Headers) -> bool {
+    match h.get("x-should-retry").map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("true") => true,
+        Some(v) if v.eq_ignore_ascii_case("false") => false,
+        _ => RETRYABLE.contains(&status),
+    }
+}
+
+/// `retry-after-ms`, or `Retry-After` in seconds or as an HTTP date.
 pub(crate) fn retry_after(h: &Headers) -> Option<Duration> {
     if let Some(ms) = h
         .get("retry-after-ms")
@@ -92,8 +103,62 @@ pub(crate) fn retry_after(h: &Headers) -> Option<Duration> {
     {
         return Some(Duration::from_secs_f64(ms / 1000.0));
     }
-    let s = h.get("retry-after")?.trim().parse::<f64>().ok()?;
-    (s.is_finite() && s >= 0.0).then(|| Duration::from_secs_f64(s))
+    let v = h.get("retry-after")?.trim();
+    if let Ok(s) = v.parse::<f64>() {
+        return (s.is_finite() && s >= 0.0).then(|| Duration::from_secs_f64(s));
+    }
+    let at = http_date(v)?;
+    let now = http_date(h.get("date")?.trim())?;
+    Some(Duration::from_secs(at.saturating_sub(now)))
+}
+
+/// Seconds since the Unix epoch of an RFC 9110 IMF-fixdate such as
+/// `Sun, 06 Nov 1994 08:49:37 GMT`.
+pub(crate) fn http_date(s: &str) -> Option<u64> {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let b = s.as_bytes();
+    if b.len() != 29
+        || &b[3..5] != b", "
+        || b[7] != b' '
+        || b[11] != b' '
+        || b[16] != b' '
+        || b[19] != b':'
+        || b[22] != b':'
+        || &b[25..] != b" GMT"
+    {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<u64> {
+        let t = s.get(r)?;
+        t.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| t.parse().ok())?
+    };
+    if !DAYS.contains(&s.get(0..3)?) {
+        return None;
+    }
+    let day = num(5..7)?;
+    let month = MONTHS.iter().position(|m| Some(*m) == s.get(8..11))? as u64 + 1;
+    let year = num(12..16)?;
+    let (hh, mm, ss) = (num(17..19)?, num(20..22)?, num(23..25)?);
+    if !(1..=31).contains(&day) || hh > 23 || mm > 59 || ss > 60 || year < 1970 {
+        return None;
+    }
+    // days from 1970-01-01 to the date, proleptic Gregorian
+    let (y, m) = if month <= 2 {
+        (year - 1, month + 9)
+    } else {
+        (year, month - 3)
+    };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = (era * 146_097 + doe).checked_sub(719_468)?;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
 /// xorshift64*, seeded from std's per-process random hasher keys.
@@ -169,7 +234,63 @@ mod tests {
         assert_eq!(retry_after(&h), Some(Duration::from_millis(150)));
         let mut h = Headers::new();
         h.push("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT");
-        assert_eq!(retry_after(&h), None);
+        assert_eq!(retry_after(&h), None, "no Date header to count from");
+        h.push("Date", "Wed, 21 Oct 2026 07:27:45 GMT");
+        assert_eq!(retry_after(&h), Some(Duration::from_secs(15)));
+        let mut h = Headers::new();
+        h.push("retry-after", "Wed, 21 Oct 2026 07:27:00 GMT");
+        h.push("date", "Wed, 21 Oct 2026 07:28:00 GMT");
+        assert_eq!(retry_after(&h), Some(Duration::ZERO), "a past date");
+    }
+
+    #[test]
+    fn imf_fixdate() {
+        // the examples in RFC 9110 and well-known instants
+        assert_eq!(
+            http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(
+            http_date("Tue, 29 Feb 2000 12:00:00 GMT"),
+            Some(951_825_600)
+        );
+        assert_eq!(
+            http_date("Thu, 26 Nov 2026 05:21:35 GMT"),
+            Some(1_795_670_495)
+        );
+        for bad in [
+            "",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+            "Sun, 06 Nov 1994 08:49:37 UTC",
+            "Sun, 06 Foo 1994 08:49:37 GMT",
+            "Xyz, 06 Nov 1994 08:49:37 GMT",
+            "Sun, 32 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 24:49:37 GMT",
+            "Sun, 06 Nov 1969 08:49:37 GMT",
+            "Sun, +6 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 08:49:37 GMT ",
+            "Sun, 06 Nov 1994 08:4é:37 GM",
+        ] {
+            assert_eq!(http_date(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn should_retry_header_overrides_the_status() {
+        let mut h = Headers::new();
+        assert!(retryable(409, &h));
+        assert!(retryable(529, &h));
+        assert!(!retryable(400, &h));
+        h.push("x-should-retry", "true");
+        assert!(retryable(400, &h));
+        let mut h = Headers::new();
+        h.push("X-Should-Retry", "false");
+        assert!(!retryable(503, &h));
+        let mut h = Headers::new();
+        h.push("x-should-retry", "maybe");
+        assert!(retryable(503, &h));
     }
 
     #[test]

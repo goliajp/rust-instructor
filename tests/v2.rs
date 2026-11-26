@@ -454,7 +454,7 @@ fn gemini_sends_json_schema() {
     let body = first_request(&Client::gemini("k"));
     let cfg = &body["generationConfig"];
     assert!(cfg.get("responseSchema").is_none());
-    assert_eq!(cfg["responseJsonSchema"]["type"], "object");
+    assert_eq!(cfg["responseFormat"]["text"]["schema"]["type"], "object");
 }
 
 #[test]

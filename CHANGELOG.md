@@ -69,9 +69,11 @@ Each item lists what to change. Most code needs the first three.
    `Part::image(media_type, data)`; on the builder `.image(..)` / `.images(..)`
    → `.part(..)`. New: `Part::document` for PDFs.
 
-6. **Retries.** HTTP retries are **on by default**: 3 retries on 408, 429,
-   500, 502, 503, 504, 529 and connection errors, honouring `Retry-After` and
-   `retry-after-ms`. `BackoffConfig` → `RetryPolicy`, `with_retry_backoff` →
+6. **Retries.** HTTP retries are **on by default**: 3 retries on 408, 409,
+   429, 500, 502, 503, 504, 529 and connection errors, honouring
+   `retry-after-ms` and `Retry-After` (seconds, or an HTTP date counted from
+   the response's `Date` header). An `x-should-retry: true` / `false`
+   response header overrides the status. `BackoffConfig` → `RetryPolicy`, `with_retry_backoff` →
    `with_retry`; `with_retry(RetryPolicy::none())` turns them off.
    `with_max_retries(n)` / `.max_retries(n)` → `with_max_attempts(n + 1)` /
    `.max_attempts(n + 1)`.
@@ -92,8 +94,10 @@ Each item lists what to change. Most code needs the first three.
    DeepSeek, GLM and Qwen hosts now send `response_format: json_object` with
    the schema in the system prompt, since those APIs document only JSON mode;
    `with_output_mode(OutputMode::Schema)` restores the 1.x request. Gemini
-   always gets `responseJsonSchema` (1.x sent `responseSchema` unless the type
-   was recursive).
+   gets `generationConfig.responseFormat.text` with a JSON Schema (1.x sent
+   `responseMimeType` with `responseSchema`, or `responseJsonSchema` for a
+   recursive type; Google marks those fields deprecated). Integer and number
+   `format`s and `const` are not sent to Gemini, which documents neither.
 
 10. **Features and runtime.** `default-features = false` now means no HTTP
     client: add `features = ["reqwest"]` or call `with_transport`. The core
@@ -107,8 +111,45 @@ Each item lists what to change. Most code needs the first three.
 12. A `T` that contains `serde_json::value::RawValue` no longer deserializes;
     use `serde_json::Value`.
 
+13. **No default temperature.** 1.x sent `temperature: 0.0` to OpenAI and
+    every OpenAI-compatible API unless you set one; reasoning models reject
+    a temperature. 2.0 sends it only when set: add `.with_temperature(0.0)`
+    to keep the 1.x request.
+
+14. **Strict schemas carry every type.** For OpenAI strict mode (Chat
+    Completions `Schema` and `Tool`, Responses `Schema`) and Anthropic
+    structured output, a map is sent as a list of `{"key", "value"}`
+    objects, a tuple as an object with keys `"0"`, `"1"`, …, and a root that
+    is not an object as `{"value": ..}`; answers are turned back before they
+    reach your type. Keywords the provider does not take (`uniqueItems`;
+    `minLength` / `maxLength` on OpenAI; bounds and `maxItems` on Anthropic)
+    are dropped from the schema and checked on the answer, with the usual
+    re-ask. OpenAI schemas now keep the string `format`s OpenAI lists. If you
+    read `HttpRequest` bodies or `on_partial` views, expect the sent form.
+
+15. **Anthropic model table.** `Client::anthropic` keeps structured output
+    as its default, and models without it (Claude 3, Opus 4 and 4.1, Sonnet
+    4) get a tool. The tool is forced unless thinking is on (`Effort` or
+    `Budget`; `Off` now forces it, 1.x did not) or the model rejects a
+    forced tool (Opus 5.5, Sonnet 5.5, Fable and Mythos 5.1 and 5.2); then
+    it is offered with `tool_choice: auto` and the system prompt asks for
+    the call. A recursive type's tool is forced on the same terms.
+
+16. **DeepSeek and Qwen.** New `Client::deepseek(key)` and
+    `Client::qwen(key)`. Hosts on `deepseek.com` default to `deepseek-flash`
+    and hosts on `aliyuncs.com` to `qwen3.7-plus`; 1.x sent the OpenAI
+    default, which those APIs reject. Their `Tool` mode offers the
+    tool with `tool_choice: auto` unless reasoning is `Off`, since a forced
+    tool is rejected in their default thinking mode. `Part::document` on Qwen
+    returns `Error::Unsupported` before sending.
+
+17. **Responses API history.** An assistant turn goes as
+    `{"role": "assistant", "content": "<text>"}` and every `input_image`
+    carries `"detail": "auto"`.
+
 ### Added
 
+- `Client::deepseek` and `Client::qwen`, with their own default models.
 - Sans-IO core: `Extract::exchange()` returns an `Exchange` state machine
   that yields `Step::Send(HttpRequest)`, `Step::Wait(Duration)` and
   `Step::Done(result)`; feed it responses with `receive` or, streamed,
@@ -147,6 +188,9 @@ Each item lists what to change. Most code needs the first three.
 - Gemini schemas spell `const` as a one-value `enum`: Gemini's JSON Schema
   subset has no `const` and ignores it, so the tag of a tagged enum was not
   constrained.
+- Gemini `finishReason: CONTINUATION` (the per-request limit was reached
+  before the answer was complete) counts as a truncation, like
+  `MAX_TOKENS`.
 
 ## [1.5.1] - 2026-11-26
 
