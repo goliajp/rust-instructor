@@ -88,6 +88,8 @@ struct Event {
 
 OpenAI 的严格模式 schema 和 Anthropic 的结构化输出只接受 JSON Schema 的一个子集，所以有些类型换一种形式发送，收到回答后先转回原来的形式，再交给你的类型。map（`HashMap`、`BTreeMap`）发成由 `{"key": .., "value": ..}` 对象组成的数组；元组发成以 `"0"`、`"1"`、… 为键的对象；JSON 不是对象的类型（enum、`Vec`、数字）包在 `{"value": ..}` 里。接口不接受的约束（两家都不接受 `uniqueItems`，OpenAI 不接受 `minLength` 和 `maxLength`，Anthropic 不接受取值范围和 `maxItems`）不写进发给它的 schema，改为收到回答后检查；违反约束的回答和其他不合格的回答一样，会再问一次。`on_item` 和最终结果拿到的总是你的类型自己的 JSON；`on_partial` 拿到的根已经去掉了外层包装，但里面的 map 和元组还是发送时的形式。
 
+能装任意值的类型（schema 是 `true` 的字段，比如手写的 `Schema` 返回 `Shape::Any`，或者通过 `schemars` feature 使用的 `serde_json::Value`）写不成严格模式的 schema。这时发给 OpenAI 的是普通 schema，`strict: false`；发给 Anthropic 时改用工具；回答由 crate 按 schema 检查。Gemini 会忽略 `minLength`、`maxLength` 和 `uniqueItems`，所以发给它的 schema 不带这几个关键字，回答同样由 crate 检查。
+
 没有结构化输出的 Anthropic 模型（Claude 3、Claude Opus 4 和 4.1、Claude Sonnet 4）改用工具；其他模型，包括比这个 crate 更新的模型，都发 `output_config.format`。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 和 5.2、Mythos 5.1 和 5.2 不接受强制调用工具，所以用这些模型时，以及开启思考时，用 `tool_choice: auto` 提供工具，并在系统提示里要求调用它。DeepSeek 和通义千问在思考模式下不接受强制调用工具，而它们现在的模型默认就是思考模式，所以除非 reasoning 设为 `Off`，`Tool` 模式也这样处理。通义千问的 OpenAI 兼容模式不接受 PDF，传 `Part::document` 时会在发送前返回 `Error::Unsupported`。
 
 不指定模型时的默认值：

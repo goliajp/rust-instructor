@@ -49,7 +49,8 @@ pub(crate) struct SchemaEntry {
     recursive: bool,
     base: J,
     built: [OnceLock<Box<str>>; DIALECTS],
-    reshaped: [OnceLock<bool>; 2],
+    reshaped: [OnceLock<bool>; 3],
+    has_any: OnceLock<bool>,
 }
 
 impl SchemaEntry {
@@ -65,6 +66,7 @@ impl SchemaEntry {
             base,
             built: Default::default(),
             reshaped: Default::default(),
+            has_any: OnceLock::new(),
         }
     }
 
@@ -76,6 +78,7 @@ impl SchemaEntry {
             base,
             built: Default::default(),
             reshaped: Default::default(),
+            has_any: OnceLock::new(),
         }
     }
 
@@ -93,12 +96,24 @@ impl SchemaEntry {
     /// True when answers to the strict `dialect` need [`unwire`](Self::unwire):
     /// the schema was reshaped or lost a constraint there.
     pub(crate) fn reshaped(&self, dialect: Dialect) -> bool {
-        let (i, drops, min_items) = match dialect {
-            Dialect::Strict => (0, &super::strict::OPENAI_DROPS[..], false),
-            Dialect::AnthropicOutput => (1, &super::strict::ANTHROPIC_DROPS[..], true),
-            _ => return false,
+        use super::strict::{ANTHROPIC_DROPS, GEMINI_DROPS, OPENAI_DROPS};
+        let (i, drops, min_items, reshape) = match dialect {
+            Dialect::Strict => (0, &OPENAI_DROPS[..], false, true),
+            Dialect::AnthropicOutput => (1, &ANTHROPIC_DROPS[..], true, true),
+            Dialect::GeminiJson => (2, &GEMINI_DROPS[..], false, false),
+            // the plain schema, sent when no strict one can carry the type
+            Dialect::AnthropicTool => return true,
         };
-        *self.reshaped[i].get_or_init(|| super::strict::reshaped(&self.base, drops, min_items))
+        *self.reshaped[i]
+            .get_or_init(|| super::strict::reshaped(&self.base, drops, min_items, reshape))
+    }
+
+    /// The schema accepts any value somewhere, so a strict schema cannot
+    /// carry it.
+    pub(crate) fn has_any(&self) -> bool {
+        *self
+            .has_any
+            .get_or_init(|| super::strict::has_any(&self.base))
     }
 
     /// True when a strict schema wraps the root as `{"value": ..}`.
@@ -110,14 +125,14 @@ impl SchemaEntry {
     /// [`Dialect::AnthropicOutput`]) as the type's own JSON.
     pub(crate) fn unwire(&self, answer: &str) -> Result<String, JsonError> {
         let v: J = crate::json::from_str(answer)?;
-        let v = super::strict::unwire(&self.base, v).map_err(JsonError::new)?;
+        let v = super::unwire::unwire(&self.base, v).map_err(JsonError::new)?;
         Ok(text(&v))
     }
 
     /// One complete item of a strict list answer as the item type's JSON.
     pub(crate) fn unwire_item(&self, item: &str) -> Result<String, JsonError> {
         let v: J = crate::json::from_str(item)?;
-        let v = super::strict::unwire_item(&self.base, v).map_err(JsonError::new)?;
+        let v = super::unwire::unwire_item(&self.base, v).map_err(JsonError::new)?;
         Ok(text(&v))
     }
 

@@ -21,6 +21,7 @@ pub(super) struct Sse {
     pub(super) delivered: usize,
     // the answer is in a strict schema's wire form
     pub(super) strict: bool,
+    pub(super) wrapped: bool,
 }
 
 impl<O: DeserializeOwned> Exchange<O> {
@@ -33,7 +34,8 @@ impl<O: DeserializeOwned> Exchange<O> {
             acc: provider.stream(&self.req()),
             parser: PartialParser::new(),
             delivered: 0,
-            strict: provider.strict_schema(&self.req()),
+            strict: provider.unwire(&self.req()),
+            wrapped: provider.wraps_root(&self.req()),
         });
         self.inbound = Some(Inbound {
             status,
@@ -55,6 +57,7 @@ impl<O: DeserializeOwned> Exchange<O> {
             list: self.spec.list,
             schema: self.spec.schema,
             strict: sse.strict,
+            wrapped: sse.wrapped,
         };
         let Sse {
             decoder,
@@ -85,6 +88,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                     list: self.spec.list,
                     schema: self.spec.schema,
                     strict: sse.strict,
+                    wrapped: sse.wrapped,
                 };
                 let Sse {
                     decoder,
@@ -112,6 +116,7 @@ struct View<'a> {
     list: bool,
     schema: &'static SchemaEntry,
     strict: bool,
+    wrapped: bool,
 }
 
 impl View<'_> {
@@ -129,7 +134,7 @@ impl View<'_> {
             // a strict schema wraps a root that is not an object
             let view = if self.list {
                 root.get("items")
-            } else if self.strict && self.schema.wrapped() {
+            } else if self.wrapped {
                 root.get("value")
             } else {
                 Some(root)

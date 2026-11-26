@@ -1,13 +1,14 @@
 //! A serde `Deserializer` that reads JSON bytes directly, without a tree.
 
-use serde::de::{self, Expected, Unexpected, Visitor};
+use serde::de::{self, Visitor};
 
 mod access;
+mod scalar;
 
 use access::{Map, Seq, UnitVariant, VariantMap};
 
 use super::JsonError;
-use super::scan::{Num, Scanner, Str};
+use super::scan::{Scanner, Str};
 
 pub(crate) const RAW_TOKEN: &str = "$instructors::private::Raw";
 
@@ -40,35 +41,6 @@ impl<'a> Deserializer<'a> {
             .ok_or_else(|| self.err("EOF while parsing a value"))
     }
 
-    #[cold]
-    fn invalid_type(&mut self, exp: &dyn Expected) -> JsonError {
-        let r: Result<(), JsonError> = (|| {
-            let c = self.next()?;
-            let unexp = match c {
-                b'n' => Unexpected::Unit,
-                b't' | b'f' => Unexpected::Bool(c == b't'),
-                b'-' | b'0'..=b'9' => match self.sc.parse_number()? {
-                    Num::U(n) => Unexpected::Unsigned(n),
-                    Num::I(n) => Unexpected::Signed(n),
-                    Num::F(n) => Unexpected::Float(n),
-                },
-                b'"' => {
-                    self.sc.i += 1;
-                    let s = match self.sc.parse_str(&mut self.scratch)? {
-                        Str::Borrowed(s) | Str::Copied(s) => s.to_owned(),
-                    };
-                    return Err(de::Error::invalid_type(Unexpected::Str(&s), exp));
-                }
-                b'[' => Unexpected::Seq,
-                b'{' => Unexpected::Map,
-                _ => return Err(self.err("expected value")),
-            };
-            Err(de::Error::invalid_type(unexp, exp))
-        })();
-        let e = r.expect_err("always an error");
-        e.or_at(self.sc.i)
-    }
-
     #[inline]
     fn enter(&mut self) -> Result<(), JsonError> {
         self.depth -= 1;
@@ -76,15 +48,6 @@ impl<'a> Deserializer<'a> {
             return Err(self.err("recursion limit exceeded"));
         }
         Ok(())
-    }
-
-    fn number<V: Visitor<'a>>(&mut self, v: V) -> Result<V::Value, JsonError> {
-        match self.sc.parse_number()? {
-            Num::U(n) => v.visit_u64(n),
-            Num::I(n) => v.visit_i64(n),
-            Num::F(n) => v.visit_f64(n),
-        }
-        .map_err(|e: JsonError| e.or_at(self.sc.i))
     }
 
     fn seq<V: Visitor<'a>>(&mut self, v: V) -> Result<V::Value, JsonError> {
@@ -209,6 +172,20 @@ impl<'a> de::Deserializer<'a> for &mut Deserializer<'a> {
         deserialize_i8 deserialize_i16 deserialize_i32 deserialize_i64
         deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64
         deserialize_f32 deserialize_f64
+    }
+
+    fn deserialize_i128<V: Visitor<'a>>(self, v: V) -> Result<V::Value, JsonError> {
+        match self.next()? {
+            b'-' | b'0'..=b'9' => self.wide(v, true),
+            _ => Err(self.invalid_type(&v)),
+        }
+    }
+
+    fn deserialize_u128<V: Visitor<'a>>(self, v: V) -> Result<V::Value, JsonError> {
+        match self.next()? {
+            b'-' | b'0'..=b'9' => self.wide(v, false),
+            _ => Err(self.invalid_type(&v)),
+        }
     }
 
     fn deserialize_char<V: Visitor<'a>>(self, v: V) -> Result<V::Value, JsonError> {
