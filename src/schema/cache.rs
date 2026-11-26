@@ -49,6 +49,7 @@ pub(crate) struct SchemaEntry {
     recursive: bool,
     base: J,
     built: [OnceLock<Box<str>>; DIALECTS],
+    reshaped: [OnceLock<bool>; 2],
 }
 
 impl SchemaEntry {
@@ -63,6 +64,7 @@ impl SchemaEntry {
             recursive,
             base,
             built: Default::default(),
+            reshaped: Default::default(),
         }
     }
 
@@ -73,6 +75,7 @@ impl SchemaEntry {
             recursive,
             base,
             built: Default::default(),
+            reshaped: Default::default(),
         }
     }
 
@@ -85,6 +88,17 @@ impl SchemaEntry {
     /// The type's name, as OpenAI's `json_schema.name` wants it.
     pub(crate) fn name(&self) -> &str {
         &self.name
+    }
+
+    /// True when answers to the strict `dialect` need [`unwire`](Self::unwire):
+    /// the schema was reshaped or lost a constraint there.
+    pub(crate) fn reshaped(&self, dialect: Dialect) -> bool {
+        let (i, drops, min_items) = match dialect {
+            Dialect::Strict => (0, &super::strict::OPENAI_DROPS[..], false),
+            Dialect::AnthropicOutput => (1, &super::strict::ANTHROPIC_DROPS[..], true),
+            _ => return false,
+        };
+        *self.reshaped[i].get_or_init(|| super::strict::reshaped(&self.base, drops, min_items))
     }
 
     /// True when a strict schema wraps the root as `{"value": ..}`.

@@ -139,13 +139,7 @@ fn one_of_to_any_of(m: &mut Map) {
 
 // keywords outside openai's strict subset, which rejects them
 fn strip_unsupported_openai(m: &mut Map) {
-    for k in [
-        "minLength",
-        "maxLength",
-        "uniqueItems",
-        "minProperties",
-        "maxProperties",
-    ] {
+    for k in strict::OPENAI_DROPS {
         remove(m, k);
     }
     const FORMATS: [&str; 9] = [
@@ -168,19 +162,7 @@ fn strip_unsupported_openai(m: &mut Map) {
 
 // keywords anthropic structured output rejects with a 400
 fn strip_unsupported_anthropic(m: &mut Map) {
-    for k in [
-        "minimum",
-        "maximum",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
-        "multipleOf",
-        "minLength",
-        "maxLength",
-        "maxItems",
-        "uniqueItems",
-        "minProperties",
-        "maxProperties",
-    ] {
+    for k in strict::ANTHROPIC_DROPS {
         remove(m, k);
     }
     if let Some(J::Num(n)) = get(m, "minItems")
