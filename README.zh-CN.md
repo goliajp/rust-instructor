@@ -88,7 +88,7 @@ struct Event {
 
 OpenAI 的严格模式 schema 和 Anthropic 的结构化输出只接受 JSON Schema 的一个子集，所以有些类型换一种形式发送，收到回答后先转回原来的形式，再交给你的类型。map（`HashMap`、`BTreeMap`）发成由 `{"key": .., "value": ..}` 对象组成的数组；元组发成以 `"0"`、`"1"`、… 为键的对象；JSON 不是对象的类型（enum、`Vec`、数字）包在 `{"value": ..}` 里。接口不接受的约束（两家都不接受 `uniqueItems`，OpenAI 不接受 `minLength` 和 `maxLength`，Anthropic 不接受取值范围和 `maxItems`）不写进发给它的 schema，改为收到回答后检查；违反约束的回答和其他不合格的回答一样，会再问一次。`on_item` 和最终结果拿到的总是你的类型自己的 JSON；`on_partial` 拿到的根已经去掉了外层包装，但里面的 map 和元组还是发送时的形式。
 
-能装任意值的类型（schema 是 `true` 的字段，比如手写的 `Schema` 返回 `Shape::Any`，或者通过 `schemars` feature 使用的 `serde_json::Value`）写不成严格模式的 schema。这时发给 OpenAI 的是普通 schema，`strict: false`；发给 Anthropic 时改用工具；回答由 crate 按 schema 检查。Gemini 会忽略 `minLength`、`maxLength` 和 `uniqueItems`，所以发给它的 schema 不带这几个关键字，回答同样由 crate 检查。
+能装任意值的类型（schema 是 `true` 的字段，比如手写的 `Schema` 返回 `Shape::Any`，或者通过 `schemars` feature 使用的 `serde_json::Value`）写不成严格模式的 schema。这时发给 OpenAI 的是普通 schema，`strict: false`；发给 Anthropic 时改用工具；回答由 crate 按 schema 检查；发给 Gemini 时这个字段写成空的 schema 对象。工具的 `input_schema` 和 OpenAI 的普通 schema 也必须是对象，所以根不是对象的类型在这些地方同样包在 `{"value": ..}` 里。Gemini 会忽略 `minLength`、`maxLength` 和 `uniqueItems`，所以发给它的 schema 不带这几个关键字，回答同样由 crate 检查。
 
 没有结构化输出的 Anthropic 模型（Claude 3、Claude Opus 4 和 4.1、Claude Sonnet 4）改用工具；其他模型，包括比这个 crate 更新的模型，都发 `output_config.format`。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 和 5.2、Mythos 5.1 和 5.2 不接受强制调用工具，所以用这些模型时，以及开启思考时，用 `tool_choice: auto` 提供工具，并在系统提示里要求调用它。DeepSeek 和通义千问在思考模式下不接受强制调用工具，而它们现在的模型默认就是思考模式，所以除非 reasoning 设为 `Off`，`Tool` 模式也这样处理。通义千问的 OpenAI 兼容模式不接受 PDF，传 `Part::document` 时会在发送前返回 `Error::Unsupported`。
 
@@ -321,7 +321,7 @@ instructors = { version = "2", default-features = false, features = ["derive", "
 
 不算网络，一次 OpenAI 抽取构造请求加解析回答共 3.6 µs，其中构造请求 0.38 / 0.36 µs。流式部分值解析器处理整个回答（308 段、每段 4 字节、每段之后取一次视图）要 5.79 / 5.63 µs，1.5.1 要 5.66 / 5.66 µs，两个版本的解析器源码相同。在不同进程里交替各测 4 次，2.0 是 5.57 到 5.73 µs，1.5.1 是 5.65 到 5.88 µs；在 x86_64 Linux 上，两个程序执行的指令数相差不到 0.001 %（`perf stat`）。所以单次测量里看到的差距是每次测量之间的波动，不是代码造成的。
 
-**需要转换的严格模式回答。** 带 map 的类型（schema 基准测试里的 `Complex` 类型，3 个条目）发给 OpenAI 时写成键值对数组，回答先转回原来的形式再解析。处理这样的回答（整个交互减去构造请求）要 4.58 / 4.65 µs；同一个类型改用 JSON 模式、直接解析回答，要 1.33 / 1.30 µs。所以转换每个回答大约多花 3.3 µs，只有需要转换的类型才有这部分开销；没有 map、元组、非对象的根，也没有被去掉的约束的类型，回答直接解析。
+**需要转换的严格模式回答。** 带 map 的类型（schema 基准测试里的 `Complex` 类型，3 个条目）发给 OpenAI 时写成键值对数组，回答先转回原来的形式再解析。回答先扫描一遍改写成类型自己的 JSON，再解析。处理这样的回答（整个交互减去构造请求）要 2.75 / 2.69 µs；同一个类型改用 JSON 模式、直接解析回答，要 1.32 / 1.31 µs。其中改写本身要 1.26 / 1.19 µs（以前先把回答建成树再转换，要 3.1 µs）。只有需要转换的类型才有这部分开销；没有 map、元组、非对象的根，也没有被去掉的约束的类型，回答直接解析。
 
 **本 crate 的 JSON 代码和 serde_json 对比**，第一遍 / 第二遍：
 

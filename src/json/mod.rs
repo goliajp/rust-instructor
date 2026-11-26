@@ -16,6 +16,7 @@ use serde::de::{Deserialize, Deserializer, Visitor};
 #[cfg(feature = "fuzzing")]
 pub use repair::Repaired;
 pub(crate) use repair::repair;
+pub(crate) use scan::{Scanner, Str};
 pub(crate) use write::write_u64;
 pub(crate) use write::{write_f64, write_str};
 

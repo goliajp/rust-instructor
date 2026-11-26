@@ -134,7 +134,10 @@ Each item lists what to change. Most code needs the first three.
     read `HttpRequest` bodies or `on_partial` views, expect the sent form. A
     type holding a value of any type (schema `true`) has no strict schema:
     OpenAI gets the plain schema with `strict: false`, Anthropic a tool, and
-    the answer is checked here. Gemini schemas leave out `minLength`,
+    the answer is checked here; Gemini gets an empty schema object for that
+    field. An Anthropic tool's `input_schema` and a non-strict OpenAI schema
+    wrap a root that is not an object in `{"value": ..}` too, since both must
+    be objects. Gemini schemas leave out `minLength`,
     `maxLength` and `uniqueItems`, which Gemini ignores, and the answer is
     checked for them.
 

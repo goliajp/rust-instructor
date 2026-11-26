@@ -50,6 +50,11 @@ pub(crate) fn output_format(r: &Req<'_>) -> bool {
     plan(r) == Plan::Output
 }
 
+/// The answer is a tool call (input in the plain schema's form).
+pub(crate) fn tool_call(r: &Req<'_>) -> bool {
+    matches!(plan(r), Plan::Tool { .. })
+}
+
 pub(super) fn plan(r: &Req<'_>) -> Plan {
     // manual and adaptive thinking reject or skip a forced tool call
     let thinking = matches!(

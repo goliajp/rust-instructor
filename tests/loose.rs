@@ -206,3 +206,45 @@ fn gemini_drops_what_it_ignores_and_the_answer_is_checked() {
     let (_, got) = run::<Tags>(Wire::Gemini, r#"{"tags": [], "code": "xy"}"#);
     assert!(got.unwrap_err().contains("longer than 1 characters"));
 }
+
+#[derive(Debug, Deserialize, Schema, PartialEq)]
+enum Mood {
+    Happy,
+    Sad,
+}
+
+#[test]
+fn roots_that_are_not_objects_are_wrapped_in_plain_schemas_too() {
+    // a value of any type at the root goes non-strict, still as an object
+    for w in [
+        Wire::ChatSchema,
+        Wire::ChatTool,
+        Wire::Responses,
+        Wire::Anthropic,
+    ] {
+        let (body, got) = run::<Anything>(w, r#"{"value": [1, {"a": null}]}"#);
+        let s = body.to_string();
+        assert!(s.contains(r#""properties":{"value":true}"#), "{w:?}: {s}");
+        assert_eq!(got, Ok(Anything(json!([1, {"a": null}]))), "{w:?}");
+    }
+    // an enum through an anthropic tool
+    let c = Client::anthropic("k").with_output_mode(OutputMode::Tool);
+    let mut ex = c.extract::<Mood>("x").exchange();
+    let Step::Send(req) = ex.next() else { panic!() };
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    assert_eq!(body["tools"][0]["input_schema"]["type"], "object", "{body}");
+    ex.receive(
+        200,
+        &Headers::new(),
+        &response(Wire::Anthropic, r#"{"value": "Sad"}"#),
+    );
+    let Step::Done(Ok(r)) = ex.next() else {
+        panic!()
+    };
+    assert_eq!(r.value, Mood::Sad);
+    // gemini gets an empty schema object for a value of any type
+    let (body, got) = run::<Event>(Wire::Gemini, r#"{"name": "x", "level": 1, "payload": 7}"#);
+    let schema = &body["generationConfig"]["responseFormat"]["text"]["schema"];
+    assert_eq!(schema["properties"]["payload"], json!({}));
+    assert_eq!(got.unwrap().payload, Anything(json!(7)));
+}
