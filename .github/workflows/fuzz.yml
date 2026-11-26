@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [json_de, json_write, repair, sse_split, partial_feed, strict_guided]
+        target: [json_de, json_write, repair, sse_split, partial_feed, strict_guided, partial_snapshot]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly

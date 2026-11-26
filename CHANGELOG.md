@@ -1,5 +1,40 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Typed snapshots of a streaming answer. `#[schema(partial)]` on a type
+  implements the new `instructors::partial::Partial` trait and generates
+  `TypePartial`, the same struct with every field an `Option`;
+  `Extract::on_snapshot` calls a closure with one after every delta, and
+  `PartialValue::snapshot::<T>()` reads one from a `PartialParser` view. A
+  string holds the characters received so far, a list the items so far and
+  a map the entries so far; numbers, `bool`, enums, tuples and sets appear
+  only once complete. `#[schema(whole)]` on a field keeps a type without a
+  partial form until it is complete, and `#[schema(partial = "Name")]`
+  names the struct. On strict wires the maps and tuples in a snapshot are
+  in the type's own form. Snapshots are read from the parser's tree
+  directly, without writing JSON text and parsing it again.
+
+### Changed
+
+- Answers to a reshaped strict schema (a map sent as key and value pairs, a
+  tuple as an object, a root that is not an object inside `{"value": ..}`,
+  or a constraint left out of the provider's schema) are read straight into
+  your type by a deserializer that follows the schema, instead of being
+  rewritten into the type's JSON text and parsed again. For the benchmark's `Complex` type (a map with three entries), handling
+  the answer took 1.45 / 1.52 µs on an Apple M4 Pro, against 2.61 / 2.70 µs
+  in 2.0 and 1.27 / 1.31 µs for the same type in JSON mode. A
+  rejected answer's message names the place, such as
+  `/counts/1: a repeated key "a"`, and points into the answer as received.
+  Integers keep every digit as before.
+- Gemini: a required field that holds a list or a map of a recursive type
+  (such as `children: Vec<Node>`) is optional in the Gemini schema, as
+  Gemini's structured output guide asks for recursive references, and an
+  answer that leaves it out reads as an empty list or map. The OpenAI and
+  Anthropic schemas are unchanged.
+
 ## [2.0.0] - 2026-11-26
 
 2.0 is a breaking release. The default build no longer depends on
