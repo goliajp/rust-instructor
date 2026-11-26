@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-instructors = { path = "..", default-features = false, features = ["fuzzing", "serde_json"] }
+instructors = { path = "..", default-features = false, features = ["fuzzing", "serde_json", "derive"] }
 serde = { version = "1", features = ["derive"] }
 # exact float parsing, so values compare bit for bit
 serde_json = { version = "1", features = ["float_roundtrip"] }
@@ -48,6 +48,13 @@ bench = false
 [[bin]]
 name = "partial_feed"
 path = "fuzz_targets/partial_feed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "strict_guided"
+path = "fuzz_targets/strict_guided.rs"
 test = false
 doc = false
 bench = false

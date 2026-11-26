@@ -16,7 +16,7 @@ const MAX_DEPTH: u8 = 128;
 
 pub(crate) struct Deserializer<'a> {
     pub(crate) sc: Scanner<'a>,
-    scratch: Vec<u8>,
+    pub(crate) scratch: Vec<u8>,
     depth: u8,
 }
 
@@ -30,24 +30,29 @@ impl<'a> Deserializer<'a> {
         }
     }
 
-    fn err(&self, msg: &str) -> JsonError {
+    pub(crate) fn err(&self, msg: &str) -> JsonError {
         self.sc.err(msg)
     }
 
     #[inline]
-    fn next(&mut self) -> Result<u8, JsonError> {
+    pub(crate) fn next(&mut self) -> Result<u8, JsonError> {
         self.sc
             .ws()
             .ok_or_else(|| self.err("EOF while parsing a value"))
     }
 
     #[inline]
-    fn enter(&mut self) -> Result<(), JsonError> {
+    pub(crate) fn enter(&mut self) -> Result<(), JsonError> {
         self.depth -= 1;
         if self.depth == 0 {
             return Err(self.err("recursion limit exceeded"));
         }
         Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn leave(&mut self) {
+        self.depth += 1;
     }
 
     fn seq<V: Visitor<'a>>(&mut self, v: V) -> Result<V::Value, JsonError> {

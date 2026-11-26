@@ -34,7 +34,7 @@ impl<O: DeserializeOwned> Exchange<O> {
             acc: provider.stream(&self.req()),
             parser: PartialParser::new(),
             delivered: 0,
-            strict: provider.unwire(&self.req()),
+            strict: provider.guided(&self.req()),
             wrapped: provider.wraps_root(&self.req()),
         });
         self.inbound = Some(Inbound {
@@ -151,12 +151,7 @@ impl View<'_> {
                 if !item.is_complete() {
                     break;
                 }
-                let json = item.to_json();
-                if !self.strict {
-                    h(&json);
-                } else if let Ok(own) = self.schema.unwire_item(&json) {
-                    h(&own);
-                }
+                h(&item.to_json(), self.strict.then(|| self.schema.guide()));
                 *delivered += 1;
             }
         }

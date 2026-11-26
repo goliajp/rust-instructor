@@ -10,6 +10,14 @@ fn num(v: &J) -> Option<f64> {
     }
 }
 
+fn short_int(text: &str) -> Option<i64> {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || digits.len() > 18 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
 /// The constraint keywords of one subschema, read once.
 #[derive(Default)]
 pub(crate) struct Bounds {
@@ -40,6 +48,11 @@ pub(crate) fn bounds(m: &Map) -> Bounds {
 }
 
 impl Bounds {
+    /// No keyword at all, item counts included.
+    pub(crate) fn is_none(&self) -> bool {
+        self.is_empty() && self.min_items.is_none() && self.max_items.is_none()
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         [
             self.min,
@@ -57,7 +70,11 @@ impl Bounds {
     /// A number's text against the numeric bounds; the reason when it
     /// breaks one.
     pub(crate) fn number(&self, text: &str) -> Result<(), String> {
-        let x: f64 = text.parse().unwrap_or(f64::NAN);
+        // an integer of up to 18 digits converts exactly as parsing does
+        let x = match short_int(text) {
+            Some(n) => n as f64,
+            None => text.parse().unwrap_or(f64::NAN),
+        };
         if let Some(b) = self.min
             && x < b
         {

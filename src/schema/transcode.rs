@@ -21,27 +21,6 @@ pub(crate) fn answer(root: &J, answer: &str) -> Result<String, String> {
     t.end()
 }
 
-/// One item of a list answer (`{"items": [..]}`) as the item type's JSON.
-pub(crate) fn item(root: &J, item: &str) -> Result<String, String> {
-    let schema = list_items(root).ok_or("not a list schema")?;
-    let mut t = Tx::new(root, item);
-    t.path.push(Seg::Key("items"));
-    t.path.push(Seg::Key("-"));
-    t.value(schema)?;
-    t.end()
-}
-
-fn list_items(base: &J) -> Option<&J> {
-    let J::Obj(m) = base else { return None };
-    let Some(J::Obj(p)) = get(m, "properties") else {
-        return None;
-    };
-    let Some(J::Obj(items)) = get(p, "items") else {
-        return None;
-    };
-    get(items, "items")
-}
-
 enum Seg<'a> {
     Key(&'a str),
     Index(usize),

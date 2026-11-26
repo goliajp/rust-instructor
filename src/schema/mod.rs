@@ -8,18 +8,21 @@
 mod cache;
 mod check;
 mod dialect;
+mod guide;
 mod impls;
 mod intern;
 mod lower;
 #[cfg(feature = "schemars")]
 pub(crate) mod schemars;
 mod strict;
+#[cfg(any(test, feature = "fuzzing"))]
 mod transcode;
 mod tree;
 mod variant;
 
 pub use cache::Cache;
 pub(crate) use cache::{Dialect, SchemaEntry, entry_for};
+pub(crate) use guide::Plan;
 use intern::lock;
 #[doc(hidden)]
 pub use intern::{intern, leak};

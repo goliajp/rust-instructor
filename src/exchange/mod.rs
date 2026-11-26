@@ -53,6 +53,10 @@ pub(crate) type Validator<O> =
 
 type Hook<F> = Option<Box<F>>;
 
+/// Called with each complete list item's JSON, and the guide when it is in
+/// a strict schema's wire form.
+pub(crate) type ItemHook = dyn Fn(&str, Option<&crate::schema::Plan>) + Send + Sync;
+
 #[derive(Default)]
 pub(crate) struct Hooks {
     pub(crate) on_request: Hook<dyn Fn(&HttpRequest) + Send + Sync>,
@@ -60,7 +64,7 @@ pub(crate) struct Hooks {
     pub(crate) on_delta: Hook<dyn Fn(&str) + Send + Sync>,
     pub(crate) on_partial: Hook<dyn Fn(PartialValue<'_>) + Send + Sync>,
     /// Receives each list item's JSON once it is complete.
-    pub(crate) on_item: Hook<dyn Fn(&str) + Send + Sync>,
+    pub(crate) on_item: Hook<ItemHook>,
 }
 
 impl Hooks {

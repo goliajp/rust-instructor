@@ -8,7 +8,7 @@ use crate::json::scan::{Num, Str};
 
 impl<'a> Deserializer<'a> {
     #[cold]
-    pub(super) fn invalid_type(&mut self, exp: &dyn Expected) -> JsonError {
+    pub(crate) fn invalid_type(&mut self, exp: &dyn Expected) -> JsonError {
         let r: Result<(), JsonError> = (|| {
             let c = self.next()?;
             let unexp = match c {
