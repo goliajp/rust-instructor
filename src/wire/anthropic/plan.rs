@@ -60,8 +60,13 @@ pub(super) fn plan(r: &Req<'_>) -> Plan {
         forced: !thinking && !is(r.model, &NO_FORCED_TOOL),
     };
     match r.mode {
-        // structured output cannot express recursive schemas; a tool can
-        OutputMode::Schema if r.schema.recursive() || is(r.model, &NO_OUTPUT_FORMAT) => tool,
+        // structured output cannot express recursive schemas or a value of
+        // any type; a tool can
+        OutputMode::Schema
+            if r.schema.recursive() || r.schema.has_any() || is(r.model, &NO_OUTPUT_FORMAT) =>
+        {
+            tool
+        }
         OutputMode::Schema => Plan::Output,
         OutputMode::Tool => tool,
         OutputMode::JsonObject | OutputMode::Prompt => Plan::Text,

@@ -9,46 +9,15 @@ mod host;
 
 use super::{
     Answer, Arr, DEFAULT_SYSTEM, Fail, HttpRequest, Obj, OutputMode, Provider, Req, Stop,
-    TOOL_HINT, envelope, json_headers, system_with_schema, type_obj,
+    TOOL_HINT, envelope, json_headers, openai_schema, system_with_schema, type_obj,
 };
 use crate::json::Raw;
 use crate::message::{Part, Role};
-use crate::reasoning::Reasoning;
 use crate::schema::Dialect;
 use crate::usage::Usage;
 use content::content;
 pub(crate) use host::Host;
-
-fn reasoning(o: &mut Obj<'_>, host: Host, r: Option<Reasoning>) -> Result<(), Fail> {
-    let Some(r) = r else { return Ok(()) };
-    let switch = |o: &mut Obj<'_>, on: bool| {
-        type_obj(o.key("thinking"), if on { "enabled" } else { "disabled" });
-    };
-    match (host, r) {
-        (Host::OpenAi | Host::Generic, Reasoning::Effort(e)) => {
-            o.str("reasoning_effort", e.as_str())
-        }
-        (Host::OpenAi | Host::Generic, Reasoning::Off) => o.str("reasoning_effort", "none"),
-        (Host::Qwen, Reasoning::Effort(_)) => o.bool("enable_thinking", true),
-        (Host::Qwen, Reasoning::Budget(n)) => {
-            o.bool("enable_thinking", true);
-            o.u64("thinking_budget", n.into());
-        }
-        (Host::Qwen, Reasoning::Off) => o.bool("enable_thinking", false),
-        (_, Reasoning::Effort(e)) => {
-            switch(o, true);
-            o.str("reasoning_effort", e.coarse());
-        }
-        (_, Reasoning::Off) => switch(o, false),
-        (_, Reasoning::Budget(_)) => {
-            return Err(Fail::Unsupported(format!(
-                "{} has no thinking budget parameter; use Reasoning::Effort",
-                host.name()
-            )));
-        }
-    }
-    Ok(())
-}
+use host::reasoning;
 
 pub(crate) fn request(p: &Provider, host: Host, r: &Req<'_>) -> Result<HttpRequest, Fail> {
     if host == Host::Qwen
@@ -97,8 +66,9 @@ pub(crate) fn request(p: &Provider, host: Host, r: &Req<'_>) -> Result<HttpReque
             rf.str("type", "json_schema");
             let mut js = Obj::new(rf.key("json_schema"));
             js.str("name", r.schema.name());
-            js.bool("strict", true);
-            js.raw("schema", r.schema.get(Dialect::Strict));
+            let (schema, strict) = openai_schema(r);
+            js.bool("strict", strict);
+            js.raw("schema", schema);
             js.end();
             rf.end();
         }
@@ -109,8 +79,9 @@ pub(crate) fn request(p: &Provider, host: Host, r: &Req<'_>) -> Result<HttpReque
             let mut f = Obj::new(t.key("function"));
             f.str("name", "extract");
             f.str("description", "Extract structured data from the input");
-            f.raw("parameters", r.schema.get(Dialect::Strict));
-            f.bool("strict", true);
+            let (schema, strict) = openai_schema(r);
+            f.raw("parameters", schema);
+            f.bool("strict", strict);
             f.end();
             t.end();
             tools.end();

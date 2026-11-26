@@ -88,6 +88,8 @@ derive は `syn` 3 の上に作っていて、有効にしている feature は 
 
 OpenAI の strict なスキーマと Anthropic の構造化出力は JSON Schema の一部しか受け付けません。そこで一部の型は別の形で送り、回答を元の形に戻してから型に渡します。マップ（`HashMap`、`BTreeMap`）は `{"key": .., "value": ..}` オブジェクトの配列に、タプルは `"0"`、`"1"`、… をキーとするオブジェクトにします。JSON がオブジェクトでない型（enum、`Vec`、数値など）は `{"value": ..}` で包みます。プロバイダーが受け付けない制約（どちらでも `uniqueItems`、OpenAI では `minLength` と `maxLength`、Anthropic では値の範囲と `maxItems`）はスキーマから外し、回答を受け取ってから確認します。制約に反する回答は、ほかの不正な回答と同じように聞き直します。`on_item` と最終的な値は常に元の型の JSON です。`on_partial` には包みを外したルートを渡しますが、その中のマップとタプルは送ったときの形のままです。
 
+任意の値を持つ型（スキーマが `true` になるフィールド。`Shape::Any` を返す手書きの `Schema` や、`schemars` feature 経由の `serde_json::Value` など）には strict なスキーマがありません。その場合、OpenAI には普通のスキーマを `strict: false` で送り、Anthropic にはツールを使い、回答はこのクレートがスキーマに照らして確認します。Gemini は `minLength`、`maxLength`、`uniqueItems` を無視するので、これらをスキーマから外し、回答を同じように確認します。
+
 構造化出力のない Anthropic のモデル（Claude 3、Claude Opus 4 と 4.1、Claude Sonnet 4）にはツールを使います。それ以外のモデルには、このクレートより新しいものも含めて `output_config.format` を送ります。Claude Opus 5.5、Sonnet 5.5、Fable 5.1 と 5.2、Mythos 5.1 と 5.2 はツールの強制を拒否します。これらのモデルと、思考がオンのときは、`tool_choice: auto` でツールを提示し、システムプロンプトで呼び出しを頼みます。DeepSeek と Qwen は思考モードでツールの強制を拒否し、現行モデルはデフォルトで思考モードなので、reasoning が `Off` でない限り `Tool` モードでも同じようにします。Qwen の OpenAI 互換モードは PDF を受け付けないので、`Part::document` を渡すと送信前に `Error::Unsupported` を返します。
 
 モデルを指定しなかったときのデフォルト：

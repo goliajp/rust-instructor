@@ -61,6 +61,9 @@ pub(crate) fn build(base: &J, dialect: Dialect) -> Box<str> {
         Dialect::GeminiJson => {
             walk(&mut v, &mut |m| {
                 const_to_enum(m);
+                for k in strict::GEMINI_DROPS {
+                    remove(m, k);
+                }
                 // formats are documented for strings only
                 if strict::has_type(m, "integer") || strict::has_type(m, "number") {
                     remove(m, "format");

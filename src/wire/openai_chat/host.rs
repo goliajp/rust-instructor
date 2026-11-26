@@ -1,7 +1,7 @@
 //! The OpenAI-compatible APIs this crate knows by their base URL.
 
 use crate::reasoning::Reasoning;
-use crate::wire::OutputMode;
+use crate::wire::{Fail, Obj, OutputMode, type_obj};
 
 /// Which OpenAI-compatible API is on the other end, from the base URL host.
 /// It decides the output-limit field, the reasoning parameters and the
@@ -71,4 +71,36 @@ impl Host {
             Self::OpenAi | Self::Generic | Self::Kimi => OutputMode::Schema,
         }
     }
+}
+
+/// Each host's reasoning parameters.
+pub(super) fn reasoning(o: &mut Obj<'_>, host: Host, r: Option<Reasoning>) -> Result<(), Fail> {
+    let Some(r) = r else { return Ok(()) };
+    let switch = |o: &mut Obj<'_>, on: bool| {
+        type_obj(o.key("thinking"), if on { "enabled" } else { "disabled" });
+    };
+    match (host, r) {
+        (Host::OpenAi | Host::Generic, Reasoning::Effort(e)) => {
+            o.str("reasoning_effort", e.as_str())
+        }
+        (Host::OpenAi | Host::Generic, Reasoning::Off) => o.str("reasoning_effort", "none"),
+        (Host::Qwen, Reasoning::Effort(_)) => o.bool("enable_thinking", true),
+        (Host::Qwen, Reasoning::Budget(n)) => {
+            o.bool("enable_thinking", true);
+            o.u64("thinking_budget", n.into());
+        }
+        (Host::Qwen, Reasoning::Off) => o.bool("enable_thinking", false),
+        (_, Reasoning::Effort(e)) => {
+            switch(o, true);
+            o.str("reasoning_effort", e.coarse());
+        }
+        (_, Reasoning::Off) => switch(o, false),
+        (_, Reasoning::Budget(_)) => {
+            return Err(Fail::Unsupported(format!(
+                "{} has no thinking budget parameter; use Reasoning::Effort",
+                host.name()
+            )));
+        }
+    }
+    Ok(())
 }

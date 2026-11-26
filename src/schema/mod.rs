@@ -15,12 +15,15 @@ mod lower;
 pub(crate) mod schemars;
 mod strict;
 mod tree;
+mod unwire;
+mod variant;
 
 pub use cache::Cache;
 pub(crate) use cache::{Dialect, SchemaEntry, entry_for};
 use intern::lock;
 #[doc(hidden)]
 pub use intern::{intern, leak};
+pub use variant::{Variant, VariantKind};
 
 /// A type whose JSON form can be described to a model.
 ///
@@ -255,37 +258,6 @@ impl EnumShape {
     pub fn name(&self) -> &'static str {
         self.name
     }
-}
-
-/// One enum variant.
-pub struct Variant {
-    name: &'static str,
-    doc: Option<&'static str>,
-    kind: VariantKind,
-}
-
-impl Variant {
-    pub const fn new(name: &'static str, kind: VariantKind) -> Self {
-        Self {
-            name,
-            doc: None,
-            kind,
-        }
-    }
-
-    pub const fn doc(mut self, doc: &'static str) -> Self {
-        self.doc = Some(doc);
-        self
-    }
-}
-
-/// What a variant carries.
-#[non_exhaustive]
-pub enum VariantKind {
-    Unit,
-    Newtype(ShapeFn),
-    Tuple(&'static [ShapeFn]),
-    Struct(&'static [Field]),
 }
 
 #[cfg(test)]

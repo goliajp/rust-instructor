@@ -59,8 +59,9 @@ pub(crate) fn request(p: &Provider, r: &Req<'_>) -> Result<HttpRequest, Fail> {
             let mut f = Obj::new(text.key("format"));
             f.str("type", "json_schema");
             f.str("name", r.schema.name());
-            f.bool("strict", true);
-            f.raw("schema", r.schema.get(Dialect::Strict));
+            let (schema, strict) = super::openai_schema(r);
+            f.bool("strict", strict);
+            f.raw("schema", schema);
             f.end();
         } else {
             type_obj(text.key("format"), "json_object");

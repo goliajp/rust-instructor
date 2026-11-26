@@ -41,9 +41,27 @@ pub(crate) fn set(m: &mut Map, key: &str, v: J) {
     }
 }
 
+/// Reads a value keeping each number's text as written, so an integer
+/// beyond 2^53 or a float's digits pass through unchanged. Only the crate's
+/// own JSON deserializer can produce it.
 impl<'de> serde::Deserialize<'de> for J {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        d.deserialize_any(Visit)
+        let raw = json::Raw::deserialize(d)?;
+        match raw.0.as_bytes().first() {
+            Some(b'-' | b'0'..=b'9') => Ok(J::Num(raw.0.to_owned())),
+            _ => json::from_str::<Inner>(raw.0)
+                .map(|i| i.0)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// One level of a value; nested values go through `J` again.
+struct Inner(J);
+
+impl<'de> serde::Deserialize<'de> for Inner {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(Visit).map(Inner)
     }
 }
 
@@ -61,22 +79,8 @@ impl<'de> serde::de::Visitor<'de> for Visit {
     fn visit_none<E>(self) -> Result<J, E> {
         Ok(J::Null)
     }
-    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<J, D::Error> {
-        d.deserialize_any(self)
-    }
     fn visit_bool<E>(self, b: bool) -> Result<J, E> {
         Ok(J::Bool(b))
-    }
-    fn visit_u64<E>(self, n: u64) -> Result<J, E> {
-        Ok(J::Num(n.to_string()))
-    }
-    fn visit_i64<E>(self, n: i64) -> Result<J, E> {
-        Ok(J::Num(n.to_string()))
-    }
-    fn visit_f64<E>(self, n: f64) -> Result<J, E> {
-        let mut out = Vec::new();
-        json::write_f64(&mut out, n);
-        Ok(J::Num(String::from_utf8(out).expect("ascii")))
     }
     fn visit_str<E>(self, v: &str) -> Result<J, E> {
         Ok(J::Str(v.to_owned()))

@@ -18,9 +18,7 @@ impl<O: DeserializeOwned> Exchange<O> {
         self.usage.add(&answer.usage, &model);
         let schema = self.spec.schema;
         let unwire = |t: &str| schema.unwire(t);
-        let strict = self.spec.targets[self.idx]
-            .provider
-            .strict_schema(&self.req());
+        let strict = self.spec.targets[self.idx].provider.unwire(&self.req());
         let parsed = parse::parse::<O>(
             &answer.content,
             self.spec.list,

@@ -1,6 +1,7 @@
 //! Request bytes out, response bytes in, one module per wire protocol. No
 //! I/O and no async here.
 
+mod answer;
 mod anthropic;
 mod gemini;
 mod openai_chat;
@@ -9,12 +10,13 @@ mod openai_resp;
 mod tests;
 mod write;
 
+pub(crate) use answer::openai_schema;
 pub(crate) use openai_chat::Host;
 pub(crate) use write::{Arr, Obj, type_obj};
 
 use crate::message::Message;
 use crate::reasoning::Reasoning;
-use crate::schema::{Dialect, SchemaEntry};
+use crate::schema::SchemaEntry;
 use crate::usage::Usage;
 
 /// How the schema reaches the model.
@@ -175,20 +177,6 @@ impl Provider {
             Wire::Anthropic => "claude-sonnet-5",
             Wire::Gemini => "gemini-3.6-flash",
         }
-    }
-
-    /// The request carries a strict schema whose answers are in the strict
-    /// wire form and go through [`SchemaEntry::unwire`](crate::schema::SchemaEntry).
-    pub(crate) fn strict_schema(&self, r: &Req<'_>) -> bool {
-        let dialect = match &self.wire {
-            Wire::OpenAiChat(_) if matches!(r.mode, OutputMode::Schema | OutputMode::Tool) => {
-                Dialect::Strict
-            }
-            Wire::OpenAiResponses if r.mode == OutputMode::Schema => Dialect::Strict,
-            Wire::Anthropic if anthropic::output_format(r) => Dialect::AnthropicOutput,
-            _ => return false,
-        };
-        r.schema.reshaped(dialect)
     }
 
     pub(crate) fn request(&self, r: &Req<'_>) -> Result<HttpRequest, Fail> {

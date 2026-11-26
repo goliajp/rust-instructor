@@ -52,7 +52,9 @@ Each item lists what to change. Most code needs the first three.
    | fallback errors joined in one message | `Error::Fallback`; `chain()` and `source()` walk every provider's error |
 
    Every variant names its `provider`, and `err.usage()` returns what the
-   failed extraction cost. `refusal()` and `is_truncated()` remain.
+   failed extraction cost; `Error::Api` gained `provider`, `retry_after` and
+   `usage`, so a pattern on it needs `..`. `refusal()` and `is_truncated()`
+   remain. `ValidationError::message` is now a method, not a field.
 
 3. **Usage.** Counters are `u64`. `total_tokens` and `retries` are methods.
    New: `cached_input_tokens`, `cache_write_tokens`, `reasoning_tokens`,
@@ -60,14 +62,17 @@ Each item lists what to change. Most code needs the first three.
    includes cache reads and writes. The usage of a fallback that succeeded
    includes the requests of the providers that failed before it.
 
-4. `ExtractResult<T>` is now `Extracted<T>` with a `truncated` field; the old
-   name is a deprecated alias.
+4. `ExtractResult<T>` is now `Extracted<T>` with a `truncated` field and
+   `#[non_exhaustive]`; the old name is a deprecated alias at the crate root
+   and is no longer in the prelude. `ExtractBuilder` is now `Extract` and
+   `BatchBuilder` is `Batch`.
 
 5. **Messages and images.** `Message { role, content, images }` has private
    fields: use `Message::user(..)` / `Message::assistant(..)` and `.with(part)`.
    `ImageInput::Url(u)` → `Part::image_url(u)`, `ImageInput::Base64 { .. }` →
-   `Part::image(media_type, data)`; on the builder `.image(..)` / `.images(..)`
-   → `.part(..)`. New: `Part::document` for PDFs.
+   `Part::image(media_type, data)`; `Message::user_with_images(text, imgs)` →
+   `Message::user(text).with(part)`; on the builder `.image(..)` /
+   `.images(..)` → `.part(..)`. New: `Part::document` for PDFs.
 
 6. **Retries.** HTTP retries are **on by default**: 3 retries on 408, 409,
    429, 500, 502, 503, 504, 529 and connection errors, honouring
@@ -100,7 +105,8 @@ Each item lists what to change. Most code needs the first three.
    `format`s and `const` are not sent to Gemini, which documents neither.
 
 10. **Features and runtime.** `default-features = false` now means no HTTP
-    client: add `features = ["reqwest"]` or call `with_transport`. The core
+    client: add `features = ["reqwest"]` or call `with_transport`. The
+    implicit `tiktoken` feature is gone; enable `cost-tracking`. The core
     needs no async runtime; the default reqwest transport still needs tokio.
     TLS is rustls with the ring provider (1.x used aws-lc), so no CMake or C
     toolchain beyond what ring needs.
@@ -125,7 +131,12 @@ Each item lists what to change. Most code needs the first three.
     `minLength` / `maxLength` on OpenAI; bounds and `maxItems` on Anthropic)
     are dropped from the schema and checked on the answer, with the usual
     re-ask. OpenAI schemas now keep the string `format`s OpenAI lists. If you
-    read `HttpRequest` bodies or `on_partial` views, expect the sent form.
+    read `HttpRequest` bodies or `on_partial` views, expect the sent form. A
+    type holding a value of any type (schema `true`) has no strict schema:
+    OpenAI gets the plain schema with `strict: false`, Anthropic a tool, and
+    the answer is checked here. Gemini schemas leave out `minLength`,
+    `maxLength` and `uniqueItems`, which Gemini ignores, and the answer is
+    checked for them.
 
 15. **Anthropic model table.** `Client::anthropic` keeps structured output
     as its default, and models without it (Claude 3, Opus 4 and 4.1, Sonnet
@@ -188,6 +199,9 @@ Each item lists what to change. Most code needs the first three.
 - Gemini schemas spell `const` as a one-value `enum`: Gemini's JSON Schema
   subset has no `const` and ignores it, so the tag of a tagged enum was not
   constrained.
+- `u128` and `i128` fields deserialize, at full width; the crate's JSON
+  reader rejected them. Numbers in a converted strict answer keep their
+  text, so integers beyond 2^53 are not rounded.
 - Gemini `finishReason: CONTINUATION` (the per-request limit was reached
   before the answer was complete) counts as a truncation, like
   `MAX_TOKENS`.
