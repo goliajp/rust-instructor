@@ -13,7 +13,7 @@ Typed structured output from LLMs, in Rust. Derive `Deserialize` and `Schema` on
 
 The crate has no third-party runtime dependency of its own: the schema derive, the JSON parser, the repair and the streaming parser are part of it, and serde is the only interface your types need. The HTTP client is a trait; the default implementation is reqwest with rustls. With `default-features = false` the crate builds requests and parses responses without doing any I/O and without an async runtime, and builds for `wasm32-unknown-unknown`.
 
-Parsing an OpenAI response body into a 1.2 KB `Invoice` takes 3.0 µs; with `serde_json` it takes 4.1 µs. One complete `extract` call over loopback HTTP takes 53 to 54 µs, about as long as a plain `reqwest` POST and parse in the same process; rstructor 0.6.0 takes 77 µs and rig-core 0.47.1 takes 81 µs. Conditions and all rows are under [Performance](#performance).
+Parsing an OpenAI response body into a 1.2 KB `Invoice` takes 3.0 µs; with `serde_json` it takes 4.1 µs. One complete `extract` call over loopback HTTP takes about 51 µs, as long as a plain `reqwest` POST and parse in the same process; rstructor 0.6.0 takes 76 µs and rig-core 0.47.1 takes 80 µs. Conditions and all rows are under [Performance](#performance).
 
 ## Quick start
 
@@ -305,41 +305,43 @@ instructors = { version = "2", default-features = false, features = ["derive", "
 
 ## Performance
 
-Measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores) holding an exclusive benchmark lock, release build with LTO and one codegen unit, rustc 1.100.0, serde 1.0.229, serde_json 1.0.154, reqwest 0.13.5. The 1-minute load average, sampled every 15 s, was between 1.7 and 2.0 during the measurement. Every row was measured in two passes a few seconds apart, and the tables show the median of each pass (5 rounds for the end-to-end rows, 7 or 9 for the others). Payload: an `Invoice` with two nested addresses, an enum, eight line items with optional fields, CJK text and escaped quotes, 1,247 bytes of JSON. All requests go to a loopback HTTP server; no API is called. The JSON and repair rows come from `cargo bench --bench json --features fuzzing`; the program for the other rows is not in this repository.
+Measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores) holding an exclusive benchmark lock, release build with LTO and one codegen unit, rustc 1.100.0, serde 1.0.229, serde_json 1.0.154, reqwest 0.13.5. The 1-minute load average, sampled every 15 s, was between 1.5 and 3.1 during the run. Every row was measured in two passes a few seconds apart, and the tables show the median of each pass (5 rounds for the end-to-end rows, 7 or 9 for the others). Payload: an `Invoice` with two nested addresses, an enum, eight line items with optional fields, CJK text and escaped quotes, 1,247 bytes of JSON. All requests go to a loopback HTTP server; no API is called. The JSON and repair rows come from `cargo bench --bench json --features fuzzing`; the program for the other rows is not in this repository.
 
 **One `extract` call, end to end** (OpenAI wire, sequential calls over a kept-alive HTTP/1.1 connection, 5 × 5,000 calls). The floor is the same version of `reqwest` posting a prebuilt body and parsing the response with `serde_json`.
 
 | Client | Per call, pass 1 / pass 2 |
 |---|---:|
-| floor | 53.0 / 53.3 µs |
-| instructors 2.0 | 53.9 / 52.7 µs |
-| instructors 1.5.1 | 55.2 / 53.9 µs |
-| rstructor 0.6.0 | 77.4 / 77.0 µs |
-| rig-core 0.47.1 (`output_schema`, then `serde_json::from_str`) | 80.6 / 80.6 µs |
+| floor | 50.5 / 51.9 µs |
+| instructors 2.0 | 51.2 / 51.4 µs |
+| instructors 1.5.1 | 53.3 / 53.1 µs |
+| rstructor 0.6.0 | 76.4 / 76.2 µs |
+| rig-core 0.47.1 (`output_schema`, then `serde_json::from_str`) | 79.5 / 79.7 µs |
 
-The floor itself varies by 0.3 µs and the instructors rows by 1.3 µs between passes, so 2.0 and the floor cannot be told apart here; 2.0 was 1.2 µs faster than 1.5.1 in both passes. For an Anthropic tool answer, 2.0 took 52.8 / 52.3 µs and 1.5.1 took 53.4 / 52.0 µs. For an answer streamed in 311 events with a partial value after each, 2.0 took 97.5 / 97.9 µs and 1.5.1 took 97.2 / 98.2 µs. Neither shows a difference. A real model call takes hundreds of milliseconds or more, so these times matter for CPU cost in large batches and in proxies.
+The floor itself varies by 1.4 µs between passes, so 2.0 and the floor cannot be told apart here; 2.0 was 2.0 and 1.7 µs faster than 1.5.1. For an Anthropic tool answer, 2.0 took 50.3 / 51.6 µs and 1.5.1 took 51.4 / 50.9 µs, no difference. For an answer streamed in 311 events with a partial value after each, 2.0 took 97.2 / 97.1 µs and 1.5.1 took 98.8 / 98.0 µs. A real model call takes hundreds of milliseconds or more, so these times matter for CPU cost in large batches and in proxies.
 
-Without the network, building the request and parsing the answer of one OpenAI extraction takes 3.6 µs, of which building the request is 0.39 µs. The streaming partial parser takes 5.8 / 5.7 µs for the whole answer in 308 deltas of 4 bytes with a view after each; 1.5.1 took 5.7 / 5.6 µs. The parser source is the same in both versions.
+Without the network, building the request and parsing the answer of one OpenAI extraction takes 3.6 µs, of which building the request is 0.38 / 0.36 µs. The streaming partial parser takes 5.79 / 5.63 µs for the whole answer in 308 deltas of 4 bytes with a view after each; 1.5.1 took 5.66 / 5.66 µs. The parser source is the same in both versions. Run in separate processes, four times each and alternating, the two versions took 5.57 to 5.73 µs (2.0) and 5.65 to 5.88 µs (1.5.1), and on x86_64 Linux the two programs execute the same number of instructions to within 0.001 % (`perf stat`), so the gap in a single run is run-to-run variation, not code.
+
+**Strict answers that need converting.** A type with a map (the `Complex` type of the schema benchmark, three entries) is sent to OpenAI as a list of key and value pairs, and the answer is turned back before it is parsed. Handling that answer (the full exchange minus building the request) took 4.58 / 4.65 µs; the same type through JSON mode, where the answer is parsed directly, took 1.33 / 1.30 µs. The conversion therefore costs about 3.3 µs per answer, only for types that need it; a type without a map, tuple, non-object root or dropped constraint is parsed directly.
 
 **The crate's JSON code against serde_json**, pass 1 / pass 2:
 
 | What | serde_json | instructors 2.0 |
 |---|---:|---:|
-| content → `Invoice` | 1,562 / 1,563 ns | 1,346 / 1,372 ns |
-| OpenAI response body → `Invoice`, borrowed envelope | 4,057 / 4,101 ns | 2,954 / 2,977 ns |
-| Anthropic tool answer → `Invoice` | 3,057 / 3,058 ns | 2,497 / 2,496 ns |
-| one streamed chunk, envelope only | 231 / 229 ns | 184 / 185 ns |
-| write a 4,167-byte request into a reused buffer | 1,380 / 1,346 ns | 806 / 812 ns |
+| content → `Invoice` | 1,591 / 1,558 ns | 1,337 / 1,359 ns |
+| OpenAI response body → `Invoice`, borrowed envelope | 4,093 / 4,080 ns | 2,969 / 2,961 ns |
+| Anthropic tool answer → `Invoice` | 3,057 / 3,058 ns | 2,520 / 2,491 ns |
+| one streamed chunk, envelope only | 228 / 229 ns | 185 / 187 ns |
+| write a 4,167-byte request into a reused buffer | 1,358 / 1,326 ns | 804 / 805 ns |
 
 **Repair**, input to repaired text, pass 1 / pass 2:
 
 | Input | jsonrepair 0.1.0 | instructors 2.0 |
 |---|---:|---:|
-| valid JSON | 2.66 / 2.68 µs | 0.84 / 0.84 µs |
-| trailing commas | 7.79 / 7.66 µs | 2.90 / 2.90 µs |
-| single quotes | 6.39 / 6.05 µs | 3.18 / 3.22 µs |
-| markdown fence | 2.59 / 2.69 µs | 0.87 / 0.87 µs |
-| cut off at 2/3 of the length | 6.55 / 6.76 µs | 1.97 / 1.96 µs |
+| valid JSON | 2.63 / 2.64 µs | 0.84 / 0.85 µs |
+| trailing commas | 7.86 / 7.75 µs | 2.92 / 2.94 µs |
+| single quotes | 6.22 / 6.17 µs | 3.20 / 3.18 µs |
+| markdown fence | 2.66 / 2.64 µs | 0.87 / 0.86 µs |
+| cut off at 2/3 of the length | 6.65 / 6.77 µs | 1.97 / 1.96 µs |
 
 In both libraries the first four inputs deserialize into `Invoice` after the repair. The cut-off input does not, because required fields are missing; `accept_truncated` covers types whose missing fields are optional.
 
