@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - 2026-11-26
 
 2.0 is a breaking release. The default build no longer depends on
 `schemars`, `futures`, `thiserror`, `rand` or `jsonrepair`, and `tokio` is no

@@ -1,6 +1,6 @@
 [package]
 name = "instructors"
-version = "1.5.1"
+version = "2.0.0"
 edition = "2024"
 description = "Typed structured output from LLMs over the OpenAI, Anthropic and Gemini APIs, with validation, retry and streaming partial JSON"
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ exclude = ["fuzz", "tests/json_suite"]
 members = ["derive"]
 
 [dependencies]
-instructors-derive = { version = "=1.5.1", path = "derive", optional = true }
+instructors-derive = { version = "=2.0.0", path = "derive", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 # the reqwest feature: rustls with the ring provider, no system TLS library
@@ -45,7 +45,7 @@ preserve-order = []
 fuzzing = []
 
 [dev-dependencies]
-instructors-derive = { version = "=1.5.1", path = "derive" }
+instructors-derive = { version = "=2.0.0", path = "derive" }
 # the previous release, for request differential tests
 instructors_1 = { package = "instructors", version = "=1.5.1" }
 serde_json = "1"
