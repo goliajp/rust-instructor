@@ -22,8 +22,13 @@ pub(crate) use write::{write_f64, write_str};
 
 /// A JSON syntax or data error, with the line and column where it was
 /// found.
+// one pointer, so every `Result` on the reading path stays small; the
+// fields are allocated only when an error is built
+#[derive(Clone, PartialEq, Eq)]
+pub struct JsonError(Box<Repr>);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JsonError {
+struct Repr {
     message: String,
     // where in the value the error was found, as `/key/0`; empty at the root
     path: String,
@@ -34,40 +39,41 @@ pub struct JsonError {
 }
 
 impl JsonError {
+    #[cold]
     pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
+        Self(Box::new(Repr {
             message: message.into(),
             path: String::new(),
             offset: None,
             line: 0,
             column: 0,
-        }
+        }))
     }
 
+    #[cold]
     pub(crate) fn at(message: &str, offset: usize) -> Self {
-        Self {
-            offset: Some(offset),
-            ..Self::new(message)
-        }
+        let mut e = Self::new(message);
+        e.0.offset = Some(offset);
+        e
     }
 
     /// Set the position unless one is already known.
     pub(crate) fn or_at(mut self, offset: usize) -> Self {
-        self.offset.get_or_insert(offset);
+        self.0.offset.get_or_insert(offset);
         self
     }
 
     /// The error happened inside `seg` of the value being read.
     pub(crate) fn under(mut self, seg: &dyn fmt::Display) -> Self {
-        self.path.insert_str(0, &format!("/{seg}"));
+        self.0.path.insert_str(0, &format!("/{seg}"));
         self
     }
 
     pub(crate) fn locate(mut self, input: &[u8]) -> Self {
-        let Some(at) = self.offset else { return self };
+        let Some(at) = self.0.offset else { return self };
         let before = &input[..at.min(input.len())];
-        self.line = 1 + before.iter().filter(|&&b| b == b'\n').count();
-        self.column = before.len()
+        self.0.line = 1 + before.iter().filter(|&&b| b == b'\n').count();
+        self.0.column = before.len()
             - before
                 .iter()
                 .rposition(|&b| b == b'\n')
@@ -77,23 +83,33 @@ impl JsonError {
 
     /// Byte offset into the input where the error was found, when known.
     pub fn offset(&self) -> Option<usize> {
-        self.offset
+        self.0.offset
+    }
+}
+
+impl fmt::Debug for JsonError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let r = &self.0;
+        f.debug_struct("JsonError")
+            .field("message", &r.message)
+            .field("path", &r.path)
+            .field("offset", &r.offset)
+            .field("line", &r.line)
+            .field("column", &r.column)
+            .finish()
     }
 }
 
 impl fmt::Display for JsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if !self.path.is_empty() {
-            write!(f, "{}: ", self.path)?;
+        let r = &self.0;
+        if !r.path.is_empty() {
+            write!(f, "{}: ", r.path)?;
         }
-        if self.line == 0 {
-            f.write_str(&self.message)
+        if r.line == 0 {
+            f.write_str(&r.message)
         } else {
-            write!(
-                f,
-                "{} at line {} column {}",
-                self.message, self.line, self.column
-            )
+            write!(f, "{} at line {} column {}", r.message, r.line, r.column)
         }
     }
 }
