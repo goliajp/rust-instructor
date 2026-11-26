@@ -5,9 +5,10 @@ use std::borrow::Cow;
 use serde::Deserialize;
 
 mod content;
+mod plan;
 
 use super::{
-    Answer, Arr, Fail, HttpRequest, Obj, OutputMode, Provider, Req, Stop, envelope, json_headers,
+    Answer, Arr, Fail, HttpRequest, Obj, Provider, Req, Stop, TOOL_HINT, envelope, json_headers,
     system_with_schema, type_obj,
 };
 use crate::json::Raw;
@@ -16,35 +17,11 @@ use crate::reasoning::{Effort, Reasoning};
 use crate::schema::Dialect;
 use crate::usage::Usage;
 use content::content;
+pub(crate) use plan::output_format;
+use plan::{Plan, plan};
 
 const DEFAULT_MAX_TOKENS: u32 = 16384;
 const SYSTEM: &str = "Extract the requested information from the given text.";
-const TOOL_HINT: &str = " Answer by calling the `extract` tool.";
-
-/// Where the answer comes from.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Plan {
-    /// `output_config.format`: text blocks.
-    Output,
-    /// A tool; forced unless thinking is on.
-    Tool { forced: bool },
-    /// The schema in the system prompt: text blocks.
-    Text,
-}
-
-fn plan(r: &Req<'_>) -> Plan {
-    match r.mode {
-        // structured output cannot express recursive schemas; a tool can.
-        // forced tool choice is rejected whenever thinking is on and by the
-        // newest models, so this path asks for the call instead
-        OutputMode::Schema if r.schema.recursive() => Plan::Tool { forced: false },
-        OutputMode::Schema => Plan::Output,
-        OutputMode::Tool => Plan::Tool {
-            forced: r.reasoning.is_none(),
-        },
-        OutputMode::JsonObject | OutputMode::Prompt => Plan::Text,
-    }
-}
 
 fn thinking(r: Option<Reasoning>) -> (Option<Reasoning>, Option<&'static str>) {
     match r {

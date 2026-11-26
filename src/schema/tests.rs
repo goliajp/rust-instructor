@@ -241,8 +241,10 @@ const PAIRS: [(Dialect, oracle::Dialect); 3] = [
     (Dialect::GeminiJson, oracle::Dialect::GeminiJson),
 ];
 
+// 1.5's dialect rules on 2.0's canonical schema; 2.0's own rules are
+// tested separately
 fn ours<T: Schema>(list: bool, d: Dialect) -> Value {
-    serde_json::from_str(entry_for::<T>(list).get(d)).unwrap()
+    serde_json::from_str(&entry_for::<T>(list).get_15(d)).unwrap()
 }
 
 // 1.5 built list schemas from `Vec<T>`
@@ -292,22 +294,6 @@ fn diff(a: &Value, b: &Value, path: &str) -> Option<String> {
     }
 }
 
-/// 2.0 sends Gemini `enum: [x]` where 1.5 sent `const: x`.
-fn const_to_enum(v: &mut Value) {
-    match v {
-        Value::Object(m) => {
-            if !m.contains_key("enum")
-                && let Some(c) = m.remove("const")
-            {
-                m.insert("enum".into(), Value::Array(vec![c]));
-            }
-            m.values_mut().for_each(const_to_enum);
-        }
-        Value::Array(a) => a.iter_mut().for_each(const_to_enum),
-        _ => {}
-    }
-}
-
 fn same<T: Schema + JsonSchema + 'static>() {
     for list in [false, true] {
         let name = std::any::type_name::<T>();
@@ -326,10 +312,7 @@ fn same<T: Schema + JsonSchema + 'static>() {
             "{name} list={list}"
         );
         for (d, o) in PAIRS {
-            let (a, mut b) = (ours::<T>(list, d), theirs::<T>(list, o));
-            if d == Dialect::GeminiJson {
-                const_to_enum(&mut b);
-            }
+            let (a, b) = (ours::<T>(list, d), theirs::<T>(list, o));
             assert_eq!(diff(&a, &b, ""), None, "{name} list={list} {d:?}");
         }
     }
@@ -439,14 +422,16 @@ use order::keys;
 #[test]
 fn schemars_bridge_matches_1_5() {
     for list in [false, true] {
-        let got: Value =
-            serde_json::from_str(super::schemars::entry_for::<Invoice>(list).get(Dialect::Strict))
-                .unwrap();
+        let got: Value = serde_json::from_str(
+            &super::schemars::entry_for::<Invoice>(list).get_15(Dialect::Strict),
+        )
+        .unwrap();
         let mut want = theirs::<Invoice>(list, oracle::Dialect::OpenAi);
         assert_eq!(diff(&got, &want["json_schema"]["schema"].take(), ""), None);
         for (d, o) in PAIRS {
             let got: Value =
-                serde_json::from_str(super::schemars::entry_for::<Invoice>(list).get(d)).unwrap();
+                serde_json::from_str(&super::schemars::entry_for::<Invoice>(list).get_15(d))
+                    .unwrap();
             assert_eq!(diff(&got, &theirs::<Invoice>(list, o), ""), None, "{d:?}");
         }
     }

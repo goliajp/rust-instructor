@@ -11,6 +11,8 @@ use crate::schema::{Schema, entry_for};
 use crate::transport::Transport;
 use crate::wire::{Host, OpenAiApi, OutputMode, Provider, Wire};
 
+mod providers;
+
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// LLM client for structured extraction. Cloning is cheap.
@@ -51,7 +53,6 @@ fn default_transport() -> Option<Arc<dyn Transport>> {
 
 impl Client {
     fn new(wire: Wire, key: String, base_url: String, mode: OutputMode) -> Self {
-        let temperature = matches!(wire, Wire::OpenAiChat(_)).then_some(0.0);
         Self {
             inner: Arc::new(Config {
                 provider: Provider {
@@ -62,7 +63,7 @@ impl Client {
                 transport: default_transport(),
                 model: None,
                 system: None,
-                temperature,
+                temperature: None,
                 max_tokens: None,
                 reasoning: None,
                 mode,
@@ -79,69 +80,6 @@ impl Client {
         self
     }
 
-    /// A client for OpenAI (Chat Completions; see [`with_api`](Self::with_api)).
-    pub fn openai(api_key: impl Into<String>) -> Self {
-        Self::openai_compatible(api_key, "https://api.openai.com/v1")
-    }
-
-    /// A client for any OpenAI-compatible Chat Completions API.
-    ///
-    /// The base URL's host selects details for APIs this crate knows:
-    /// `api.openai.com` gets `max_completion_tokens`; DeepSeek
-    /// (`deepseek.com`), Qwen (`aliyuncs.com`), Kimi (`moonshot.cn`,
-    /// `moonshot.ai`, `kimi.ai`, `kimi.com`) and GLM (`bigmodel.cn`, `z.ai`)
-    /// get their own [`Reasoning`] parameters. DeepSeek, Qwen and GLM default
-    /// to [`OutputMode::JsonObject`], the others to [`OutputMode::Schema`];
-    /// change it with [`with_output_mode`](Self::with_output_mode).
-    pub fn openai_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        let base_url = base_url.into();
-        let host = Host::from_base_url(&base_url);
-        Self::new(
-            Wire::OpenAiChat(host),
-            api_key.into(),
-            base_url,
-            host.default_mode(),
-        )
-    }
-
-    /// A client for Anthropic. Uses structured output
-    /// (`output_config.format`); a type that refers to itself goes as a tool.
-    pub fn anthropic(api_key: impl Into<String>) -> Self {
-        Self::new(
-            Wire::Anthropic,
-            api_key.into(),
-            "https://api.anthropic.com/v1".into(),
-            OutputMode::Schema,
-        )
-    }
-
-    /// A client for any Anthropic-compatible API. Sends the schema as a
-    /// forced tool call ([`OutputMode::Tool`]), which compatible servers
-    /// support more widely than `output_config`.
-    pub fn anthropic_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new(
-            Wire::Anthropic,
-            api_key.into(),
-            base_url.into(),
-            OutputMode::Tool,
-        )
-    }
-
-    /// A client for Google Gemini.
-    pub fn gemini(api_key: impl Into<String>) -> Self {
-        Self::gemini_compatible(api_key, "https://generativelanguage.googleapis.com/v1beta")
-    }
-
-    /// A client for any Gemini-compatible API.
-    pub fn gemini_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new(
-            Wire::Gemini,
-            api_key.into(),
-            base_url.into(),
-            OutputMode::Schema,
-        )
-    }
-
     /// The default model. A fallback client uses its own.
     pub fn with_model(self, model: impl Into<String>) -> Self {
         let model = model.into();
@@ -154,9 +92,9 @@ impl Client {
         self.with(|c| c.system = Some(system))
     }
 
-    /// The default temperature. OpenAI-family clients send 0.0 unless set;
-    /// never sent to Anthropic, whose current models reject a non-default
-    /// value.
+    /// The default temperature, sent only when set (reasoning models reject
+    /// it); never sent to Anthropic, whose current models reject a
+    /// non-default value.
     pub fn with_temperature(self, t: f64) -> Self {
         self.with(|c| c.temperature = Some(t))
     }

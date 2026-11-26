@@ -1,6 +1,7 @@
 //! Per-provider adjustments of the canonical schema, then bytes.
 
 use super::cache::Dialect;
+use super::strict;
 use super::tree::{J, Map, get, remove, s, set, write};
 
 /// Visit every subschema of one schema object (not property maps
@@ -23,27 +24,33 @@ fn walk(v: &mut J, f: &mut impl FnMut(&mut Map)) {
 
 pub(crate) fn build(base: &J, dialect: Dialect) -> Box<str> {
     let mut v = base.clone();
-    let strict = |v: &mut J| {
-        walk(v, &mut |m| {
-            remove(m, "title");
-            remove(m, "format");
-            one_of_to_any_of(m);
-            close_object(m);
-        })
+    let wrap = |v: J| {
+        if strict::object_root(base) {
+            v
+        } else {
+            strict::wrap(v)
+        }
     };
     let v = match dialect {
         Dialect::Strict => {
-            strict(&mut v);
-            v
+            walk(&mut v, &mut |m| {
+                strict::reshape(m);
+                remove(m, "title");
+                strip_unsupported_openai(m);
+                one_of_to_any_of(m);
+                close_object(m);
+            });
+            wrap(v)
         }
         Dialect::AnthropicOutput => {
             walk(&mut v, &mut |m| {
+                strict::reshape(m);
                 remove(m, "title");
                 strip_unsupported_anthropic(m);
                 one_of_to_any_of(m);
                 close_object(m);
             });
-            v
+            wrap(v)
         }
         Dialect::AnthropicTool => {
             walk(&mut v, &mut |m| {
@@ -52,7 +59,13 @@ pub(crate) fn build(base: &J, dialect: Dialect) -> Box<str> {
             v
         }
         Dialect::GeminiJson => {
-            walk(&mut v, &mut const_to_enum);
+            walk(&mut v, &mut |m| {
+                const_to_enum(m);
+                // formats are documented for strings only
+                if strict::has_type(m, "integer") || strict::has_type(m, "number") {
+                    remove(m, "format");
+                }
+            });
             v
         }
     };
@@ -61,6 +74,34 @@ pub(crate) fn build(base: &J, dialect: Dialect) -> Box<str> {
     String::from_utf8(out)
         .expect("the writer emits utf-8")
         .into_boxed_str()
+}
+
+/// The dialects as 1.5 built them from the same canonical schema, for the
+/// tests that compare the canonical form with 1.5's output.
+#[cfg(test)]
+pub(crate) fn build_15(base: &J, dialect: Dialect) -> String {
+    let mut v = base.clone();
+    walk(&mut v, &mut |m| match dialect {
+        Dialect::Strict => {
+            remove(m, "title");
+            remove(m, "format");
+            one_of_to_any_of(m);
+            close_object(m);
+        }
+        Dialect::AnthropicOutput => {
+            remove(m, "title");
+            strip_unsupported_anthropic(m);
+            one_of_to_any_of(m);
+            close_object(m);
+        }
+        Dialect::AnthropicTool => {
+            remove(m, "title");
+        }
+        Dialect::GeminiJson => {}
+    });
+    let mut out = Vec::new();
+    write(&v, &mut out);
+    String::from_utf8(out).expect("the writer emits utf-8")
 }
 
 /// Strict modes: no extra keys, every property listed in `required`.
@@ -93,6 +134,35 @@ fn one_of_to_any_of(m: &mut Map) {
         && let Some(i) = m.iter().position(|(k, _)| k == "oneOf")
     {
         m[i].0 = "anyOf".into();
+    }
+}
+
+// keywords outside openai's strict subset, which rejects them
+fn strip_unsupported_openai(m: &mut Map) {
+    for k in [
+        "minLength",
+        "maxLength",
+        "uniqueItems",
+        "minProperties",
+        "maxProperties",
+    ] {
+        remove(m, k);
+    }
+    const FORMATS: [&str; 9] = [
+        "date-time",
+        "time",
+        "date",
+        "duration",
+        "email",
+        "hostname",
+        "ipv4",
+        "ipv6",
+        "uuid",
+    ];
+    if let Some(J::Str(f)) = get(m, "format")
+        && !FORMATS.contains(&f.as_str())
+    {
+        remove(m, "format");
     }
 }
 

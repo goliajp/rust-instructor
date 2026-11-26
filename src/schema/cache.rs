@@ -2,7 +2,14 @@ use std::sync::{Mutex, OnceLock};
 
 use super::dialect;
 use super::lower;
-use super::tree::J;
+use super::tree::{J, write};
+use crate::json::JsonError;
+
+fn text(v: &J) -> String {
+    let mut out = Vec::new();
+    write(v, &mut out);
+    String::from_utf8(out).expect("the writer emits utf-8")
+}
 use super::{Schema, Shape, lock};
 
 /// The schema dialects the request builders splice into bodies.
@@ -15,7 +22,7 @@ pub(crate) enum Dialect {
     AnthropicOutput,
     /// Anthropic tool `input_schema`; also the schema shown in prompts.
     AnthropicTool,
-    /// Gemini `responseJsonSchema`.
+    /// Gemini `responseFormat.text.schema`.
     GeminiJson,
 }
 
@@ -78,6 +85,31 @@ impl SchemaEntry {
     /// The type's name, as OpenAI's `json_schema.name` wants it.
     pub(crate) fn name(&self) -> &str {
         &self.name
+    }
+
+    /// True when a strict schema wraps the root as `{"value": ..}`.
+    pub(crate) fn wrapped(&self) -> bool {
+        !super::strict::object_root(&self.base)
+    }
+
+    /// The answer to a strict-schema request ([`Dialect::Strict`],
+    /// [`Dialect::AnthropicOutput`]) as the type's own JSON.
+    pub(crate) fn unwire(&self, answer: &str) -> Result<String, JsonError> {
+        let v: J = crate::json::from_str(answer)?;
+        let v = super::strict::unwire(&self.base, v).map_err(JsonError::new)?;
+        Ok(text(&v))
+    }
+
+    /// One complete item of a strict list answer as the item type's JSON.
+    pub(crate) fn unwire_item(&self, item: &str) -> Result<String, JsonError> {
+        let v: J = crate::json::from_str(item)?;
+        let v = super::strict::unwire_item(&self.base, v).map_err(JsonError::new)?;
+        Ok(text(&v))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_15(&self, dialect: Dialect) -> String {
+        dialect::build_15(&self.base, dialect)
     }
 
     /// Serialized schema for `dialect`, built on first call.

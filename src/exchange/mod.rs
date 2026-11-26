@@ -1,6 +1,7 @@
 //! The extraction as a state machine with no I/O: it says what to send and
 //! how long to wait, and is told what came back.
 
+mod answer;
 mod parse;
 mod retry;
 mod stream;
@@ -20,7 +21,7 @@ use crate::reasoning::Reasoning;
 use crate::schema::SchemaEntry;
 use crate::usage::Usage;
 use crate::validate::ValidationError;
-use crate::wire::{Answer, Fail, Headers, HttpRequest, OutputMode, Provider, Req};
+use crate::wire::{Fail, Headers, HttpRequest, OutputMode, Provider, Req};
 use stream::Inbound;
 
 /// A successful extraction.
@@ -131,8 +132,6 @@ pub struct Exchange<O> {
     rng: retry::Rng,
     inbound: Option<Inbound>,
 }
-
-const REASK: &str = "Reply again with only JSON that matches the schema.";
 
 impl<O: DeserializeOwned> Exchange<O> {
     pub(crate) fn new(spec: Spec<O>) -> Self {
@@ -274,7 +273,7 @@ impl<O: DeserializeOwned> Exchange<O> {
 
     fn http_error(&mut self, status: u16, headers: &Headers, body: &[u8]) {
         let server = retry::retry_after(headers);
-        if retry::RETRYABLE.contains(&status) && self.http_retry < self.spec.retry.max_retries {
+        if retry::retryable(status, headers) && self.http_retry < self.spec.retry.max_retries {
             let d = self
                 .spec
                 .retry
@@ -289,77 +288,6 @@ impl<O: DeserializeOwned> Exchange<O> {
             message: String::from_utf8_lossy(body).into_owned(),
             retry_after: server,
             usage: Box::default(),
-        });
-    }
-
-    fn answer(&mut self, answer: std::result::Result<Answer, Fail>, status: u16) {
-        let answer = match answer {
-            Ok(a) => a,
-            Err(f) => return self.fail_with(f, status),
-        };
-        let model = self.spec.targets[self.idx].model.clone();
-        self.usage.add(&answer.usage, &model);
-        let parsed = parse::parse::<O>(
-            &answer.content,
-            self.spec.list,
-            &answer.stop,
-            self.spec.accept_truncated,
-        );
-        let (problem, validation) = match parsed {
-            Ok((value, truncated)) => match self.spec.validator.as_ref().map(|v| v(&value)) {
-                Some(Err(e)) => (e.message().to_owned(), true),
-                _ => return self.succeed(value, truncated),
-            },
-            Err(parse::Bad::Truncated) => {
-                let reason = match &answer.stop {
-                    crate::wire::Stop::Truncated(r) => r.clone(),
-                    crate::wire::Stop::Done => String::new(),
-                };
-                return self.fail(Error::Truncated {
-                    provider: self.name(),
-                    reason,
-                    raw: answer.content,
-                    usage: Box::default(),
-                });
-            }
-            Err(parse::Bad::Invalid(m)) => (m, false),
-        };
-        self.attempt += 1;
-        if self.attempt < self.spec.max_attempts.max(1) {
-            // the model sees what it wrote and why it was rejected
-            let raw = if answer.content.is_empty() {
-                "(empty answer)".to_owned()
-            } else {
-                answer.content
-            };
-            self.spec.messages.push(Message::assistant(raw));
-            let what = if validation {
-                "failed validation"
-            } else {
-                "is not valid JSON for the schema"
-            };
-            self.spec.messages.push(Message::user(format!(
-                "That answer {what}: {problem}\n{REASK}"
-            )));
-            return;
-        }
-        let attempts = self.attempt;
-        let provider = self.name();
-        self.fail(if validation {
-            Error::Validation {
-                provider,
-                attempts,
-                message: problem,
-                usage: Box::default(),
-            }
-        } else {
-            Error::Parse {
-                provider,
-                attempts,
-                message: problem,
-                raw: answer.content,
-                usage: Box::default(),
-            }
         });
     }
 

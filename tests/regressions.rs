@@ -66,7 +66,11 @@ async fn recursive_type_on_anthropic_structured_output_uses_a_tool() {
     assert_eq!(r.value.title, "t");
     let body = log.body(0);
     assert!(body.get("output_config").is_none());
-    assert_eq!(body["tool_choice"], json!({"type": "auto"}));
+    // no thinking, and the default model takes a forced tool
+    assert_eq!(
+        body["tool_choice"],
+        json!({"type": "tool", "name": "extract"})
+    );
 }
 
 #[tokio::test]
@@ -78,7 +82,8 @@ async fn recursive_type_on_gemini_uses_json_schema() {
         .unwrap();
     let cfg = &log.body(0)["generationConfig"];
     assert!(cfg.get("responseSchema").is_none());
-    assert!(cfg["responseJsonSchema"]["$defs"]["Node"].is_object());
+    assert!(cfg.get("responseJsonSchema").is_none());
+    assert!(cfg["responseFormat"]["text"]["schema"]["$defs"]["Node"].is_object());
 }
 
 #[tokio::test]
@@ -366,5 +371,5 @@ async fn schema_properties_keep_declaration_order() {
             "{raw}"
         );
     }
-    assert!(log.body(2)["generationConfig"]["responseJsonSchema"].is_object());
+    assert!(log.body(2)["generationConfig"]["responseFormat"]["text"]["schema"].is_object());
 }

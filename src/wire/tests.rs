@@ -6,6 +6,8 @@ use crate::message::Part;
 use crate::reasoning::Effort;
 use crate::schema::entry_for;
 
+mod stream;
+
 #[derive(serde::Deserialize, Schema)]
 #[expect(dead_code, reason = "only the schema is used")]
 struct C {
@@ -279,9 +281,17 @@ fn gemini_always_sends_json_schema() {
     let m = [Message::user("x")];
     let b = body(&provider(Wire::Gemini), &req(&m, OutputMode::Schema, None));
     let g = &b["generationConfig"];
-    assert!(g.get("responseSchema").is_none());
-    assert_eq!(g["responseJsonSchema"]["type"], "object");
-    assert_eq!(g["responseMimeType"], "application/json");
+    assert!(g.get("responseSchema").is_none() && g.get("responseJsonSchema").is_none());
+    assert_eq!(g["responseFormat"]["text"]["schema"]["type"], "object");
+    assert_eq!(g["responseFormat"]["text"]["mimeType"], "APPLICATION_JSON");
+    let b = body(
+        &provider(Wire::Gemini),
+        &req(&m, OutputMode::JsonObject, None),
+    );
+    assert_eq!(
+        b["generationConfig"]["responseFormat"],
+        json!({"text": {"mimeType": "APPLICATION_JSON"}})
+    );
     let r = req(&m, OutputMode::Tool, None);
     assert!(matches!(
         provider(Wire::Gemini).request(&r),
@@ -330,8 +340,14 @@ fn responses_request_shape() {
     assert_eq!(hr.headers.get("Authorization"), Some("Bearer k"));
     let b: Value = serde_json::from_slice(&hr.body).unwrap();
     assert_eq!(b["instructions"], "sys");
-    assert_eq!(b["input"][1]["content"][0]["type"], "output_text");
-    assert_eq!(b["input"][2]["content"][1]["type"], "input_image");
+    assert_eq!(
+        b["input"][1],
+        json!({"role": "assistant", "content": "noted"})
+    );
+    assert_eq!(
+        b["input"][2]["content"][1],
+        json!({"type": "input_image", "image_url": "https://x/i.png", "detail": "auto"})
+    );
     assert_eq!(b["text"]["format"]["type"], "json_schema");
     assert_eq!(b["text"]["format"]["name"], "C");
     assert_eq!(b["text"]["format"]["strict"], true);
@@ -423,68 +439,4 @@ fn cache_writes_and_thinking_tokens() {
     }
     let a = s.finish().unwrap();
     assert_eq!((a.usage.output_tokens, a.usage.reasoning_tokens), (30, 20));
-}
-
-#[test]
-fn errors_inside_a_stream() {
-    let m = [Message::user("x")];
-    let r = req(&m, OutputMode::Schema, None);
-    let cases = [
-        (
-            chat(Host::OpenAi),
-            r#"{"error":{"message":"overloaded","type":"server_error"}}"#,
-        ),
-        (
-            provider(Wire::Anthropic),
-            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
-        ),
-        (
-            provider(Wire::OpenAiResponses),
-            r#"{"type":"error","code":"server_error","message":"boom","param":null,"sequence_number":3}"#,
-        ),
-        (
-            provider(Wire::OpenAiResponses),
-            r#"{"type":"response.failed","response":{"status":"failed","output":[],"error":{"code":"server_error","message":"boom"}}}"#,
-        ),
-    ];
-    for (p, error) in cases {
-        let mut s = p.stream(&r);
-        s.event(
-            r#"{"type":"response.output_text.delta","delta":"{"}"#,
-            &mut |_| {},
-        );
-        s.event(error, &mut |_| {});
-        match s.finish() {
-            Err(Fail::Api(m)) => assert!(
-                m.contains("server_error") || m.contains("overloaded_error"),
-                "{m}"
-            ),
-            other => panic!("{}: {other:?}", p.name()),
-        }
-    }
-    let resp = json!({"status": "failed", "output": [], "error": {"code": "server_error", "message": "boom"}});
-    assert!(matches!(
-        provider(Wire::OpenAiResponses).response(&r, resp.to_string().as_bytes()),
-        Err(Fail::Api(m)) if m.contains("boom")
-    ));
-}
-
-#[test]
-fn anthropic_streamed_tool_plan_keeps_the_prose_fallback() {
-    let m = [Message::user("x")];
-    let r = req(&m, OutputMode::Tool, Some(Reasoning::Off));
-    let p = provider(Wire::Anthropic);
-    let run = |events: &[&str]| {
-        let mut s = p.stream(&r);
-        let mut seen = String::new();
-        events
-            .iter()
-            .for_each(|e| s.event(e, &mut |d| seen.push_str(d)));
-        (s.finish().unwrap().content, seen)
-    };
-    let text = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I think..."}}"#;
-    assert_eq!(run(&[text]), ("I think...".into(), String::new()));
-    let start = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"extract","input":{}}}"#;
-    let json = r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#;
-    assert_eq!(run(&[text, start, json]), ("{}".into(), "{}".into()));
 }
