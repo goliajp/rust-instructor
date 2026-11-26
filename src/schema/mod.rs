@@ -21,8 +21,8 @@ mod tree;
 mod variant;
 
 pub use cache::Cache;
-pub(crate) use cache::{Dialect, SchemaEntry, entry_for};
-pub(crate) use guide::{At, Key, Plan};
+pub(crate) use cache::{Dialect, Reader, SchemaEntry, entry_for};
+pub(crate) use guide::{At, Key};
 use intern::lock;
 #[doc(hidden)]
 pub use intern::{intern, leak};

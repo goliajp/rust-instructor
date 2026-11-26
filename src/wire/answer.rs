@@ -1,7 +1,7 @@
 //! Which schema form an answer comes back in, per provider and request.
 
 use super::{OutputMode, Provider, Req, Wire, anthropic};
-use crate::schema::Dialect;
+use crate::schema::{Dialect, Reader};
 
 /// The schema for an OpenAI `json_schema` or function, and whether it is
 /// strict. A type that holds a value of any type has no strict schema, so
@@ -34,10 +34,11 @@ impl Provider {
         }
     }
 
-    /// The answer is read through the schema's guide
-    /// ([`SchemaEntry::guide`](crate::schema::SchemaEntry)).
-    pub(crate) fn guided(&self, r: &Req<'_>) -> bool {
-        self.answer_dialect(r).is_some_and(|d| r.schema.reshaped(d))
+    /// The reader for an answer whose schema was reshaped or lost a
+    /// constraint; `None` when the answer is the type's own JSON.
+    pub(crate) fn reader(&self, r: &Req<'_>) -> Option<Reader> {
+        let d = self.answer_dialect(r)?;
+        r.schema.reshaped(d).then(|| r.schema.reader(d))
     }
 
     /// The answer's root is wrapped as `{"value": ..}`.

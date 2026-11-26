@@ -100,6 +100,53 @@ pub(crate) fn reshaped(base: &J, drops: &[&str], min_items: bool, reshape: bool)
         })
 }
 
+/// A property that holds a list or a map of a type that refers to itself,
+/// with no lower bound on its length. Gemini's structured output guide asks
+/// that recursion not go through required properties, so the Gemini schema
+/// leaves such a property out of `required`, and an answer that omits it
+/// is read as an empty list or map.
+pub(crate) fn fillable(v: &J) -> bool {
+    let J::Obj(m) = v else { return false };
+    let list = has_type(m, "array")
+        && get(m, "prefixItems").is_none()
+        && !matches!(get(m, "minItems"), Some(J::Num(n)) if n != "0");
+    let refers = |x: Option<&J>| {
+        x.is_some_and(|x| {
+            any_sub(
+                x,
+                &mut |y| matches!(y, J::Obj(n) if get(n, "$ref").is_some()),
+            )
+        })
+    };
+    (list && refers(get(m, "items"))) || (is_map(m) && refers(get(m, "additionalProperties")))
+}
+
+/// The required properties of an object schema that are [`fillable`].
+pub(crate) fn fills(m: &Map) -> impl Iterator<Item = &str> {
+    let props = match get(m, "properties") {
+        Some(J::Obj(p)) => Some(p),
+        _ => None,
+    };
+    let required = match get(m, "required") {
+        Some(J::Arr(r)) => &r[..],
+        _ => &[],
+    };
+    required.iter().filter_map(move |r| match r {
+        J::Str(name) if props.and_then(|p| get(p, name)).is_some_and(fillable) => {
+            Some(name.as_str())
+        }
+        _ => None,
+    })
+}
+
+/// Some object in the schema has a required [`fillable`] property.
+pub(crate) fn has_fills(base: &J) -> bool {
+    any_sub(
+        base,
+        &mut |v| matches!(v, J::Obj(m) if fills(m).next().is_some()),
+    )
+}
+
 /// The schema accepts any value somewhere (`true` or `{}`), which no strict
 /// subset can express.
 pub(crate) fn has_any(base: &J) -> bool {

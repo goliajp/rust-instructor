@@ -55,7 +55,7 @@ type Hook<F> = Option<Box<F>>;
 
 /// Called with each complete list item's JSON, and the guide when it is in
 /// a strict schema's wire form.
-pub(crate) type ItemHook = dyn Fn(&str, Option<&crate::schema::Plan>) + Send + Sync;
+pub(crate) type ItemHook = dyn Fn(&str, Option<crate::schema::Reader>) + Send + Sync;
 
 /// Called with the streaming view, and where it sits in the schema plan
 /// when the answer is in a strict schema's wire form.

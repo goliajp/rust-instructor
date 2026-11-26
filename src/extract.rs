@@ -281,9 +281,9 @@ impl<T: DeserializeOwned> Extract<'_, Vec<T>> {
     /// is complete. Items that do not parse into `T` are skipped here; the
     /// final result still reports them.
     pub fn on_item(mut self, f: impl Fn(T) + Send + Sync + 'static) -> Self {
-        self.hooks.on_item = Some(Box::new(move |json: &str, guide| {
-            let v = match guide {
-                Some(g) => g.item::<T>(json),
+        self.hooks.on_item = Some(Box::new(move |json: &str, reader| {
+            let v = match reader {
+                Some(r) => r.item::<T>(json),
                 None => crate::json::from_str::<T>(json),
             };
             if let Ok(v) = v {

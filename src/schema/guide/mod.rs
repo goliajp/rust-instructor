@@ -34,17 +34,13 @@ struct Items<T> {
 }
 
 /// Read `text` into `T` from `node` on, the whole input one value.
-fn read<T: DeserializeOwned>(
-    plan: &Plan,
-    text: &str,
-    node: Id,
-    root: bool,
-) -> Result<T, JsonError> {
+fn read<T: DeserializeOwned>(cx: Cx<'_>, text: &str, node: Id, root: bool) -> Result<T, JsonError> {
+    let plan = cx.plan;
     let mut de = Json::new(text);
     let r = (|| {
         let wrapped = root && !plan.object_root && wrapped(&mut de)?;
         let v = T::deserialize(Guide {
-            cx: Cx { plan, full: false },
+            cx,
             de: &mut de,
             node,
         })?;
@@ -99,29 +95,41 @@ fn wrapped(de: &mut Json<'_>) -> Result<bool, JsonError> {
 
 impl Plan {
     /// An answer to the whole schema. For a list schema (`{"items": [T]}`)
-    /// a bare list is taken too.
+    /// a bare list is taken too. With `fill`, a required recursive list or
+    /// map that the answer leaves out reads as empty: the Gemini schema
+    /// sends such fields as optional.
     pub(crate) fn answer<T: DeserializeOwned>(
         &self,
         text: &str,
         list: bool,
+        fill: bool,
     ) -> Result<T, JsonError> {
+        let cx = self.cx(fill);
         if !list {
-            return read(self, text, self.root, true);
+            return read(cx, text, self.root, true);
         }
-        match read::<Items<T>>(self, text, self.root, true) {
+        match read::<Items<T>>(cx, text, self.root, true) {
             Ok(w) => Ok(w.items),
             Err(e) => match self.list {
-                Some(node) => read(self, text, node, false).map_err(|_| e),
+                Some(node) => read(cx, text, node, false).map_err(|_| e),
                 None => Err(e),
             },
         }
     }
 
     /// One item of a list answer.
-    pub(crate) fn item<T: DeserializeOwned>(&self, text: &str) -> Result<T, JsonError> {
+    pub(crate) fn item<T: DeserializeOwned>(&self, text: &str, fill: bool) -> Result<T, JsonError> {
         match self.items {
-            Some(node) => read(self, text, node, false),
+            Some(node) => read(self.cx(fill), text, node, false),
             None => Err(JsonError::new("not a list schema")),
+        }
+    }
+
+    fn cx(&self, fill: bool) -> Cx<'_> {
+        Cx {
+            plan: self,
+            full: false,
+            fill,
         }
     }
 }

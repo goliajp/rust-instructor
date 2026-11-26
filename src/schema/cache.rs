@@ -109,8 +109,10 @@ impl SchemaEntry {
             Dialect::Plain => return self.has_any() || self.wrapped(),
             Dialect::AnthropicTool => return false,
         };
-        *self.reshaped[i]
-            .get_or_init(|| super::strict::reshaped(&self.base, drops, min_items, reshape))
+        *self.reshaped[i].get_or_init(|| {
+            super::strict::reshaped(&self.base, drops, min_items, reshape)
+                || (dialect == Dialect::GeminiJson && super::strict::has_fills(&self.base))
+        })
     }
 
     /// The schema accepts any value somewhere, so a strict schema cannot
@@ -132,6 +134,14 @@ impl SchemaEntry {
             .get_or_init(|| super::guide::Plan::new(&self.base))
     }
 
+    /// The reader for answers in `dialect`'s form.
+    pub(crate) fn reader(&'static self, dialect: Dialect) -> Reader {
+        Reader {
+            plan: self.guide(),
+            fill: dialect == Dialect::GeminiJson,
+        }
+    }
+
     /// The answer as the type's own JSON text: the reference the guided
     /// reader is tested against.
     #[cfg(any(test, feature = "fuzzing"))]
@@ -147,6 +157,33 @@ impl SchemaEntry {
     /// Serialized schema for `dialect`, built on first call.
     pub(crate) fn get(&self, dialect: Dialect) -> &str {
         self.built[dialect as usize].get_or_init(|| dialect::build(&self.base, dialect))
+    }
+}
+
+/// Reads answers whose schema was reshaped for the wire straight into the
+/// caller's type.
+#[derive(Clone, Copy)]
+pub(crate) struct Reader {
+    pub(crate) plan: &'static super::guide::Plan,
+    /// A required recursive list or map the schema left optional (Gemini)
+    /// reads as empty when the answer omits it.
+    pub(crate) fill: bool,
+}
+
+impl Reader {
+    pub(crate) fn answer<T: serde::de::DeserializeOwned>(
+        &self,
+        text: &str,
+        list: bool,
+    ) -> Result<T, crate::json::JsonError> {
+        self.plan.answer(text, list, self.fill)
+    }
+
+    pub(crate) fn item<T: serde::de::DeserializeOwned>(
+        &self,
+        text: &str,
+    ) -> Result<T, crate::json::JsonError> {
+        self.plan.item(text, self.fill)
     }
 }
 
