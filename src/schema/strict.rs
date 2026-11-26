@@ -44,6 +44,51 @@ fn is_map(m: &Map) -> bool {
         )
 }
 
+/// Keywords a dialect drops and the answer check enforces.
+pub(crate) const OPENAI_DROPS: [&str; 5] = [
+    "minLength",
+    "maxLength",
+    "uniqueItems",
+    "minProperties",
+    "maxProperties",
+];
+pub(crate) const ANTHROPIC_DROPS: [&str; 11] = [
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+    "maxItems",
+    "uniqueItems",
+    "minProperties",
+    "maxProperties",
+];
+
+/// Whether an answer to a schema built with `drops` needs turning back or
+/// checking: the schema has a map, a tuple, a wrapped root or a dropped
+/// constraint (`minItems` above 1 counts for Anthropic).
+pub(crate) fn reshaped(base: &J, drops: &[&str], min_items: bool) -> bool {
+    // subschemas only, so a field named `minimum` is not a keyword
+    fn any(v: &J, drops: &[&str], min_items: bool) -> bool {
+        let J::Obj(m) = v else { return false };
+        let here = is_map(m)
+            || get(m, "prefixItems").is_some()
+            || m.iter().any(|(k, _)| drops.contains(&k.as_str()))
+            || (min_items && matches!(get(m, "minItems"), Some(J::Num(n)) if n != "0" && n != "1"));
+        here || m.iter().any(|(k, x)| match (k.as_str(), x) {
+            ("properties" | "$defs", J::Obj(p)) => p.iter().any(|(_, x)| any(x, drops, min_items)),
+            ("anyOf" | "oneOf" | "allOf" | "prefixItems", J::Arr(a)) => {
+                a.iter().any(|x| any(x, drops, min_items))
+            }
+            ("items" | "additionalProperties", x) => any(x, drops, min_items),
+            _ => false,
+        })
+    }
+    !object_root(base) || any(base, drops, min_items)
+}
+
 /// The canonical root is an object with named properties, so it needs no
 /// wrapper.
 pub(crate) fn object_root(base: &J) -> bool {
@@ -324,6 +369,18 @@ impl<'a> Back<'a> {
 
     fn map(&self, m: &'a Map, v: J, path: &str) -> Result<J, String> {
         let value = get(m, "additionalProperties").expect("checked by is_map");
+        // a compatible server that does not enforce the schema may send the
+        // plain object
+        if let J::Obj(entries) = v {
+            return entries
+                .into_iter()
+                .map(|(k, x)| {
+                    let p = format!("{path}/{k}");
+                    self.value(value, x, &p).map(|x| (k, x))
+                })
+                .collect::<Result<_, _>>()
+                .map(J::Obj);
+        }
         let J::Arr(pairs) = v else {
             return Err(format!(
                 "{}: expected a list of key and value pairs",
@@ -351,6 +408,18 @@ impl<'a> Back<'a> {
     }
 
     fn tuple(&self, items: &'a [J], v: J, path: &str) -> Result<J, String> {
+        if let J::Arr(xs) = v {
+            if xs.len() != items.len() {
+                return Err(format!("{}: expected {} items", at(path), items.len()));
+            }
+            return items
+                .iter()
+                .zip(xs)
+                .enumerate()
+                .map(|(i, (sc, x))| self.value(sc, x, &format!("{path}/{i}")))
+                .collect::<Result<_, _>>()
+                .map(J::Arr);
+        }
         let J::Obj(mut entries) = v else {
             return Err(format!(
                 "{}: expected an object with keys \"0\" to \"{}\"",

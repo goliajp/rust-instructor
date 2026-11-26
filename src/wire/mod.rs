@@ -14,7 +14,7 @@ pub(crate) use write::{Arr, Obj, type_obj};
 
 use crate::message::Message;
 use crate::reasoning::Reasoning;
-use crate::schema::SchemaEntry;
+use crate::schema::{Dialect, SchemaEntry};
 use crate::usage::Usage;
 
 /// How the schema reaches the model.
@@ -177,15 +177,18 @@ impl Provider {
         }
     }
 
-    /// The request carries a strict schema, so the answer is in the strict
-    /// wire form and goes through [`SchemaEntry::unwire`].
+    /// The request carries a strict schema whose answers are in the strict
+    /// wire form and go through [`SchemaEntry::unwire`](crate::schema::SchemaEntry).
     pub(crate) fn strict_schema(&self, r: &Req<'_>) -> bool {
-        match &self.wire {
-            Wire::OpenAiChat(_) => matches!(r.mode, OutputMode::Schema | OutputMode::Tool),
-            Wire::OpenAiResponses => r.mode == OutputMode::Schema,
-            Wire::Anthropic => anthropic::output_format(r),
-            Wire::Gemini => false,
-        }
+        let dialect = match &self.wire {
+            Wire::OpenAiChat(_) if matches!(r.mode, OutputMode::Schema | OutputMode::Tool) => {
+                Dialect::Strict
+            }
+            Wire::OpenAiResponses if r.mode == OutputMode::Schema => Dialect::Strict,
+            Wire::Anthropic if anthropic::output_format(r) => Dialect::AnthropicOutput,
+            _ => return false,
+        };
+        r.schema.reshaped(dialect)
     }
 
     pub(crate) fn request(&self, r: &Req<'_>) -> Result<HttpRequest, Fail> {

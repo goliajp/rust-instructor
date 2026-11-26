@@ -186,6 +186,26 @@ fn maps_tuples_and_sets_round_trip() {
 }
 
 #[test]
+fn plain_maps_and_arrays_are_accepted_too() {
+    // from a compatible server that does not enforce the schema
+    let answer = json!({
+        "counts": {"apples": 3}, "by_id": {"7": "seven"}, "pair": [2, "two"],
+        "tags": ["a"], "flags": {"x": false}, "rating": 1
+    });
+    for w in WIRES {
+        let got = run::<Inventory>(w, &answer).unwrap();
+        assert_eq!(got.counts, HashMap::from([("apples".into(), 3)]), "{w:?}");
+        assert_eq!(got.by_id, BTreeMap::from([(7, "seven".into())]), "{w:?}");
+        assert_eq!(got.pair, (2, "two".into()), "{w:?}");
+        assert_eq!(
+            got.flags,
+            Some(BTreeMap::from([("x".into(), false)])),
+            "{w:?}"
+        );
+    }
+}
+
+#[test]
 fn stripped_constraints_are_checked_and_re_asked() {
     let base = json!({
         "counts": [], "by_id": [], "pair": {"0": 1, "1": "x"},
