@@ -58,3 +58,10 @@ path = "fuzz_targets/strict_guided.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "partial_snapshot"
+path = "fuzz_targets/partial_snapshot.rs"
+test = false
+doc = false
+bench = false

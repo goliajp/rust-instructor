@@ -25,8 +25,11 @@
 //! Text before the first `{` or `[` is skipped, and so is anything after the
 //! root value closes, so a reply wrapped in a markdown fence still parses.
 
+mod de;
+mod typed;
 mod value;
 
+pub use typed::{Partial, PartialOf, whole};
 pub use value::PartialValue;
 
 /// Streaming JSON parser. See the [module docs](self).

@@ -9,7 +9,7 @@ use crate::drive::{self, Transports};
 use crate::error::Result;
 use crate::exchange::{Exchange, Extracted, Hooks, RetryPolicy, Spec, Target, Validator};
 use crate::message::{Message, Part};
-use crate::partial::PartialValue;
+use crate::partial::{Partial, PartialOf, PartialValue};
 use crate::reasoning::Reasoning;
 use crate::schema::SchemaEntry;
 use crate::transport::BoxFuture;
@@ -199,6 +199,24 @@ impl<'a, T: DeserializeOwned> Extract<'a, T> {
     /// starts a new value.
     pub fn on_partial(mut self, f: impl Fn(PartialValue<'_>) + Send + Sync + 'static) -> Self {
         self.hooks.on_partial = Some(Box::new(f));
+        self
+    }
+
+    /// Stream the response and call `f` after each delta with the value so
+    /// far as `T`'s partial type: for a type with `#[schema(partial)]`, a
+    /// struct with every field an `Option` (see [`Partial`]). Maps and
+    /// tuples arrive in your type's own form on every wire. For
+    /// `extract_many` it is the list of items so far. A re-ask starts a new
+    /// value.
+    pub fn on_snapshot(mut self, f: impl Fn(PartialOf<T>) + Send + Sync + 'static) -> Self
+    where
+        T: Partial,
+    {
+        self.hooks.on_snapshot = Some(Box::new(move |v, at| {
+            if let Some(p) = v.snapshot_at::<T>(at) {
+                f(p);
+            }
+        }));
         self
     }
 
