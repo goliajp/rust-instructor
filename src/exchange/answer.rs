@@ -16,14 +16,13 @@ impl<O: DeserializeOwned> Exchange<O> {
         };
         let model = self.spec.targets[self.idx].model.clone();
         self.usage.add(&answer.usage, &model);
-        let schema = self.spec.schema;
-        let strict = self.spec.targets[self.idx].provider.guided(&self.req());
+        let reader = self.spec.targets[self.idx].provider.reader(&self.req());
         let parsed = parse::parse::<O>(
             &answer.content,
             self.spec.list,
             &answer.stop,
             self.spec.accept_truncated,
-            strict.then(|| schema.guide()),
+            reader,
         );
         let (problem, validation) = match parsed {
             Ok((value, truncated)) => match self.spec.validator.as_ref().map(|v| v(&value)) {

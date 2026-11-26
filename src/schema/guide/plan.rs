@@ -3,7 +3,7 @@
 //! an answer never searches the schema tree.
 
 use super::super::check::{Bounds, bounds};
-use super::super::strict::{is_map, object_root};
+use super::super::strict::{fills, is_map, object_root};
 use super::super::tree::{J, Map, get};
 
 pub(super) type Id = u32;
@@ -66,6 +66,10 @@ pub(super) struct Typed {
     /// keys are tracked by name.
     pub(super) by_name: bool,
     pub(super) items: Id,
+    /// Required recursive lists and maps that the Gemini schema leaves
+    /// optional, by property bit, and which of them are maps.
+    pub(super) fill: u64,
+    pub(super) fill_map: u64,
     pub(super) bounds: Bounds,
     /// Numeric or length bounds to check on a scalar.
     pub(super) scalar_bounds: bool,
@@ -264,6 +268,22 @@ impl<'a> Compiler<'a> {
             Some(v) => self.compile(v),
             None => ANY,
         };
+        let (mut fill, mut fill_map) = (0u64, 0u64);
+        for name in fills(m) {
+            if let Some(i) = props
+                .iter()
+                .position(|(k, _)| &**k == name)
+                .filter(|&i| i < 64)
+            {
+                fill |= 1 << i;
+                if let Some(J::Obj(p)) = get(m, "properties")
+                    && let Some(J::Obj(f)) = get(p, name)
+                    && is_map(f)
+                {
+                    fill_map |= 1 << i;
+                }
+            }
+        }
         let b = bounds(m);
         Typed {
             types,
@@ -283,6 +303,8 @@ impl<'a> Compiler<'a> {
             required_mask,
             by_name,
             items,
+            fill,
+            fill_map,
             scalar_bounds: !b.is_empty(),
             bounds: b,
             unique: get(m, "uniqueItems") == Some(&J::Bool(true)),
@@ -327,6 +349,7 @@ impl<'a> Compiler<'a> {
                     Node::Typed(t) => {
                         t.map.is_none()
                             && t.prefix.is_none()
+                            && t.fill == 0
                             && !t.allowed
                             && !t.unique
                             && t.bounds.is_none()

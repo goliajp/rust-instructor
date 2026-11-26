@@ -20,6 +20,7 @@ pub(super) const NORM_TOKEN: &str = "$instructors::private::Norm";
 pub(super) struct Cx<'p> {
     pub(super) plan: &'p Plan,
     pub(super) full: bool,
+    pub(super) fill: bool,
 }
 
 pub(super) struct Guide<'p, 'b, 'de> {

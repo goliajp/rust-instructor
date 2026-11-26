@@ -234,3 +234,68 @@ async fn gemini_key_in_header_not_url() {
     let requests = server.received_requests().await.unwrap();
     assert!(!requests[0].url.as_str().contains("secret-api-key"));
 }
+
+#[derive(Debug, Deserialize, Schema, PartialEq)]
+struct Node {
+    name: String,
+    children: Vec<Node>,
+    by_tag: std::collections::BTreeMap<String, Node>,
+    pair: Option<Box<Node>>,
+}
+
+/// The schema a request carries and the value read back from `answer`, or
+/// the re-ask that followed.
+fn exchange<T: serde::de::DeserializeOwned + Schema>(
+    client: &Client,
+    answer: &str,
+) -> (serde_json::Value, Result<T, String>) {
+    use instructors::{Headers, Step};
+    let mut ex = client.extract::<T>("x").exchange();
+    let Step::Send(req) = ex.next() else { panic!() };
+    let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+    let reply = gemini_response(answer).to_string();
+    ex.receive(200, &Headers::new(), reply.as_bytes());
+    let got = match ex.next() {
+        Step::Done(Ok(r)) => Ok(r.value),
+        Step::Send(again) => Err(String::from_utf8_lossy(&again.body).into_owned()),
+        Step::Done(Err(e)) => Err(e.to_string()),
+        Step::Wait(_) => panic!("wait"),
+    };
+    (body, got)
+}
+
+#[test]
+fn recursive_lists_and_maps_are_optional_and_read_as_empty() {
+    let gemini = Client::gemini("k");
+    let answer = r#"{"name": "root", "children": [{"name": "leaf", "pair": null}], "by_tag": {"t": {"name": "x"}}}"#;
+    let (body, got) = exchange::<Node>(&gemini, answer);
+    let schema = &body["generationConfig"]["responseFormat"]["text"]["schema"];
+    let def = &schema["$defs"]["Node"];
+    let required = if def.is_null() {
+        &schema["required"]
+    } else {
+        &def["required"]
+    };
+    assert_eq!(*required, serde_json::json!(["name"]), "{schema}");
+    let root = got.unwrap();
+    assert_eq!(root.children[0].name, "leaf");
+    assert!(root.children[0].children.is_empty());
+    assert!(root.children[0].by_tag.is_empty());
+    assert!(root.by_tag["t"].children.is_empty());
+
+    // a field that is not a recursive list or map stays required
+    let (_, got) = exchange::<Node>(&gemini, r#"{"children": []}"#);
+    assert!(got.unwrap_err().contains("name"));
+
+    // other providers still require the recursive fields
+    let mut ex = Client::openai("k").extract::<Node>("x").exchange();
+    let instructors::Step::Send(req) = ex.next() else {
+        panic!()
+    };
+    let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+    let s = body["response_format"]["json_schema"]["schema"].to_string();
+    assert!(
+        s.contains(r#""required":["name","children","by_tag","pair"]"#),
+        "{s}"
+    );
+}

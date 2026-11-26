@@ -11,6 +11,7 @@ use super::norm::Norm;
 use super::plan::{ANY, Extra, Id, Typed};
 use crate::json::de::Deserializer as Json;
 use crate::json::{JsonError, Scanner, Str};
+use serde::de::value::{MapDeserializer, SeqDeserializer};
 
 pub(super) use super::pairs::{Pairs, Slots};
 
@@ -56,6 +57,8 @@ pub(super) struct Obj<'p, 'b, 'de> {
     child: Id,
     seg: Seg,
     seen: Vec<String>,
+    // the value to give is an empty list or map for an omitted property
+    filling: bool,
 }
 
 impl<'p, 'b, 'de> Obj<'p, 'b, 'de> {
@@ -70,7 +73,14 @@ impl<'p, 'b, 'de> Obj<'p, 'b, 'de> {
             child: ANY,
             seg: Seg::At(0),
             seen: Vec::new(),
+            filling: false,
         }
+    }
+
+    /// A property left out that reads as empty.
+    fn unfilled(&self) -> Option<usize> {
+        let m = self.t.fill & !self.bits;
+        (self.cx.fill && m != 0).then(|| m.trailing_zeros() as usize)
     }
 
     fn required(&self) -> Result<(), JsonError> {
@@ -110,7 +120,19 @@ impl<'de> MapAccess<'de> for Obj<'_, '_, 'de> {
         seed: K,
     ) -> Result<Option<K::Value>, JsonError> {
         let c = match self.de.sc.ws() {
-            Some(b'}') => return self.required().map(|()| None),
+            Some(b'}') => {
+                let Some(i) = self.unfilled() else {
+                    return self.required().map(|()| None);
+                };
+                self.bits |= 1 << i;
+                self.filling = true;
+                self.seg = Seg::Prop(i);
+                let name = &self.t.props[i].0;
+                if self.t.by_name {
+                    self.seen.push(name.to_string());
+                }
+                return seed.deserialize(Key::copied(name, self.de.sc.i)).map(Some);
+            }
             Some(b',') if !self.first => {
                 self.de.sc.i += 1;
                 self.de.sc.ws()
@@ -164,6 +186,17 @@ impl<'de> MapAccess<'de> for Obj<'_, '_, 'de> {
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, JsonError> {
+        if std::mem::take(&mut self.filling) {
+            let Seg::Prop(i) = self.seg else {
+                unreachable!("a filled property is a property")
+            };
+            let r = if self.t.fill_map & (1 << i) != 0 {
+                seed.deserialize(MapDeserializer::new(std::iter::empty::<((), ())>()))
+            } else {
+                seed.deserialize(SeqDeserializer::new(std::iter::empty::<()>()))
+            };
+            return r.map_err(|e| self.under(e));
+        }
         match self.de.sc.ws() {
             Some(b':') => self.de.sc.i += 1,
             Some(_) => return Err(self.de.err("expected `:`")),

@@ -113,7 +113,7 @@ fn both<T: DeserializeOwned + Schema>(text: &str) -> (Result<T, String>, Result<
         .map_err(|e| e.to_string());
     let new = e
         .guide()
-        .answer::<T>(text, false)
+        .answer::<T>(text, false, false)
         .map_err(|e| e.to_string());
     (old, new)
 }
@@ -194,7 +194,10 @@ fn nested_lists_and_options() {
 fn numbers_keep_every_digit() {
     let text = r#"{"exact": 18446744073709551615, "wide": 340282366920938463463374607431768211455, "m": [{"key": "a", "value": 123456789012345678901234567890}], "neg": -170141183460469231731687303715884105728}"#;
     agree_near::<Big>(text);
-    let v: Big = entry_for::<Big>(false).guide().answer(text, false).unwrap();
+    let v: Big = entry_for::<Big>(false)
+        .guide()
+        .answer(text, false, false)
+        .unwrap();
     assert_eq!(v.exact, u64::MAX);
     assert_eq!(v.wide, u128::MAX);
     assert_eq!(v.m["a"], 123456789012345678901234567890);
@@ -218,12 +221,12 @@ fn messages_name_the_place() {
         )
     };
     let e = g
-        .answer::<Inventory>(&base("[]", r#"["a", "a"]"#, 3), false)
+        .answer::<Inventory>(&base("[]", r#"["a", "a"]"#, 3), false, false)
         .unwrap_err()
         .to_string();
     assert!(e.starts_with("/tags: the list has repeated items"), "{e}");
     let e = g
-        .answer::<Inventory>(&base("[]", "[]", 9), false)
+        .answer::<Inventory>(&base("[]", "[]", 9), false, false)
         .unwrap_err()
         .to_string();
     assert!(
@@ -232,7 +235,7 @@ fn messages_name_the_place() {
     );
     let dup = r#"[{"key": "a", "value": 1}, {"key": "a", "value": 2}]"#;
     let e = g
-        .answer::<Inventory>(&base(dup, "[]", 3), false)
+        .answer::<Inventory>(&base(dup, "[]", 3), false, false)
         .unwrap_err()
         .to_string();
     assert!(e.starts_with(r#"/counts/1: a repeated key "a""#), "{e}");
@@ -244,11 +247,12 @@ fn lists_and_items() {
     let g = e.guide();
     let want = vec![Shape::Dot, Shape::Line(1, 2)];
     let wrapped = r#"{"items": ["Dot", {"Line": {"0": 1, "1": 2}}]}"#;
-    assert_eq!(g.answer::<Vec<Shape>>(wrapped, true).unwrap(), want);
+    assert_eq!(g.answer::<Vec<Shape>>(wrapped, true, false).unwrap(), want);
     let bare = r#"["Dot", {"Line": {"0": 1, "1": 2}}]"#;
-    assert_eq!(g.answer::<Vec<Shape>>(bare, true).unwrap(), want);
+    assert_eq!(g.answer::<Vec<Shape>>(bare, true, false).unwrap(), want);
     assert_eq!(
-        g.item::<Shape>(r#"{"Line": {"1": 2, "0": 1}}"#).unwrap(),
+        g.item::<Shape>(r#"{"Line": {"1": 2, "0": 1}}"#, false)
+            .unwrap(),
         Shape::Line(1, 2)
     );
 }

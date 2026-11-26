@@ -39,7 +39,7 @@ where
 {
     crate::schema::entry_for::<T>(false)
         .guide()
-        .answer(text, false)
+        .answer(text, false, false)
 }
 
 /// The same answer rewritten into the type's own JSON text and then

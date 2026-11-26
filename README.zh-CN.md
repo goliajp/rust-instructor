@@ -84,9 +84,9 @@ struct Event {
 
 `openai_compatible` 会看 base URL 的主机名：`api.openai.com` 发 `max_completion_tokens`；DeepSeek（`deepseek.com`）、通义千问（`aliyuncs.com`）、Kimi（`moonshot.cn`、`moonshot.ai`、`kimi.ai`、`kimi.com`）和 GLM（`bigmodel.cn`、`z.ai`）各用自己的[思考参数](#思考深度)。DeepSeek、通义千问和 GLM 默认用 `JsonObject`，因为它们的文档只写了 JSON 模式，没有写严格 schema；其他主机按通用的 OpenAI 兼容接口处理，用 `Schema`。
 
-引用自身的类型（树、链表）用 `$defs` 和 `$ref` 发送。Anthropic 的结构化输出表达不了递归，所以这种类型发给 Anthropic 时改用工具。Gemini 只把递归引用展开几层，文档里只说可以用在非必填的属性上。`children: Vec<Node>` 这样必填的递归字段会原样发送，Gemini 可能拒绝，也可能只生成到某一层。
+引用自身的类型（树、链表）用 `$defs` 和 `$ref` 发送。Anthropic 的结构化输出表达不了递归，所以这种类型发给 Anthropic 时改用工具。Gemini 只把递归引用展开几层，它的结构化输出指南要求递归不要经过必填属性，也不要经过 `minItems` 大于 0 的数组。所以发给 Gemini 的 schema 里，存放递归类型的数组或 map 的必填字段（比如 `children: Vec<Node>`）改成非必填，回答里没有这个字段时按空数组或空 map 读取。类型本身就是递归类型的必填字段（不是 `Option` 的 `Box<Node>`）照原样发送，Gemini 可能拒绝，也可能只生成到某一层。
 
-OpenAI 的严格模式 schema 和 Anthropic 的结构化输出只接受 JSON Schema 的一个子集，所以有些类型换一种形式发送，收到回答后先转回原来的形式，再交给你的类型。map（`HashMap`、`BTreeMap`）发成由 `{"key": .., "value": ..}` 对象组成的数组；元组发成以 `"0"`、`"1"`、… 为键的对象；JSON 不是对象的类型（enum、`Vec`、数字）包在 `{"value": ..}` 里。接口不接受的约束（两家都不接受 `uniqueItems`，OpenAI 不接受 `minLength` 和 `maxLength`，Anthropic 不接受取值范围和 `maxItems`）不写进发给它的 schema，改为收到回答后检查；违反约束的回答和其他不合格的回答一样，会再问一次。`on_item` 和最终结果拿到的总是你的类型自己的 JSON；`on_partial` 拿到的根已经去掉了外层包装，但里面的 map 和元组还是发送时的形式。
+OpenAI 的严格模式 schema 和 Anthropic 的结构化输出只接受 JSON Schema 的一个子集，所以有些类型换一种形式发送，收到回答后按发送时的形式直接读进你的类型。map（`HashMap`、`BTreeMap`）发成由 `{"key": .., "value": ..}` 对象组成的数组；元组发成以 `"0"`、`"1"`、… 为键的对象；JSON 不是对象的类型（enum、`Vec`、数字）包在 `{"value": ..}` 里。接口不接受的约束（两家都不接受 `uniqueItems`，OpenAI 不接受 `minLength` 和 `maxLength`，Anthropic 不接受取值范围和 `maxItems`）不写进发给它的 schema，改为收到回答后检查；违反约束的回答和其他不合格的回答一样，会再问一次。`on_item`、`on_snapshot` 和最终结果拿到的总是你的类型自己的形式；`on_partial` 拿到的根已经去掉了外层包装，但里面的 map 和元组还是发送时的形式。
 
 能装任意值的类型（schema 是 `true` 的字段，比如手写的 `Schema` 返回 `Shape::Any`，或者通过 `schemars` feature 使用的 `serde_json::Value`）写不成严格模式的 schema。这时发给 OpenAI 的是普通 schema，`strict: false`；发给 Anthropic 时改用工具；回答由 crate 按 schema 检查；发给 Gemini 时这个字段写成空的 schema 对象。工具的 `input_schema` 和 OpenAI 的普通 schema 也必须是对象，所以根不是对象的类型在这些地方同样包在 `{"value": ..}` 里。Gemini 会忽略 `minLength`、`maxLength` 和 `uniqueItems`，所以发给它的 schema 不带这几个关键字，回答同样由 crate 检查。
 
@@ -154,6 +154,30 @@ let article: Article = client
 ```
 
 传入的值是对增量解析器的借用视图。解析器每个字节只读一遍，所以整个流的开销和长度成正比。没收完的字符串里是已经收到的字符，`is_complete()` 表示一个值是否已经结束。`v.parse::<Snapshot>()` 把目前的值反序列化成你自己的类型（通常字段都是 `Option`），`to_json()` 给出它的 JSON 文本。解析器本身也公开为 [`instructors::partial::PartialParser`](https://docs.rs/instructors/latest/instructors/partial/)。
+
+想要带类型的视图，就在类型上加 `#[schema(partial)]`，再用 `on_snapshot`。derive 会另外生成 `ArticlePartial`：字段和原来的结构体一样，只是每个字段都是 `Option`；某个字段的类型也加了 `#[schema(partial)]` 的话，这个字段里放的是那个类型的 partial 结构体。每收到一段数据，闭包都会拿到一个：
+
+```rust
+#[derive(Deserialize, Schema)]
+#[schema(partial)]
+struct Article {
+    title: String,
+    tags: Vec<String>,
+    author: Author, // Author has #[schema(partial)] too
+}
+
+let article: Article = client
+    .extract("...")
+    .on_snapshot(|a: ArticlePartial| {
+        if let Some(title) = &a.title {
+            println!("title so far: {title}");
+        }
+    })
+    .await?
+    .value;
+```
+
+字符串里是已经收到的字符，数组里是已经收到的元素，map 里是已经收到的条目。数字、`bool`、enum、元组和集合要等完整之后才出现，所以 `1234` 还没收完时，字段不会显示成 `12`。字段的类型没有 partial 形式时，给字段加上 `#[schema(whole)]`，它会在完整之后出现；`#[schema(partial = "Draft")]` 指定生成的结构体的名字；带生命周期参数的类型不能用 `#[schema(partial)]`。在严格模式的接口上，快照里的 map 和元组是你的类型自己的形式，不是发送时的形式。用 `extract_many` 时，快照是目前为止收到的元素列表；`PartialValue::snapshot::<T>()` 对 `PartialParser` 里的值给出同样的视图。
 
 用 `extract_many` 时，`on_item` 会在列表里的每一项完整之后立刻交给你：
 
@@ -321,7 +345,7 @@ instructors = { version = "2", default-features = false, features = ["derive", "
 
 不算网络，一次 OpenAI 抽取构造请求加解析回答共 3.6 µs，其中构造请求 0.38 / 0.36 µs。流式部分值解析器处理整个回答（308 段、每段 4 字节、每段之后取一次视图）要 5.79 / 5.63 µs，1.5.1 要 5.66 / 5.66 µs，两个版本的解析器源码相同。在不同进程里交替各测 4 次，2.0 是 5.57 到 5.73 µs，1.5.1 是 5.65 到 5.88 µs；在 x86_64 Linux 上，两个程序执行的指令数相差不到 0.001 %（`perf stat`）。所以单次测量里看到的差距是每次测量之间的波动，不是代码造成的。
 
-**需要转换的严格模式回答。** 带 map 的类型（schema 基准测试里的 `Complex` 类型，3 个条目）发给 OpenAI 时写成键值对数组，回答先转回原来的形式再解析。回答先扫描一遍改写成类型自己的 JSON，再解析。处理这样的回答（整个交互减去构造请求）要 2.75 / 2.69 µs；同一个类型改用 JSON 模式、直接解析回答，要 1.32 / 1.31 µs。其中改写本身要 1.26 / 1.19 µs（以前先把回答建成树再转换，要 3.1 µs）。只有需要转换的类型才有这部分开销；没有 map、元组、非对象的根，也没有被去掉的约束的类型，回答直接解析。
+**需要转换的严格模式回答。** 带 map 的类型（schema 基准测试里的 `Complex` 类型，3 个条目）发给 OpenAI 时写成键值对数组。从 2.1 起，回答按这种形式直接读进类型，读取过程由 schema 引导；2.0 是先把回答改写成类型自己的 JSON 文本，再解析一遍。2026-11-27 在同一台机器上测量，两个版本在同一个基准锁里编译和运行，交替跑两轮，测量期间 1 分钟平均负载 1.6 到 1.7：处理这样的回答（整个交互减去构造请求）要 1.45 / 1.52 µs，2.0 要 2.61 / 2.70 µs；同一个类型改用 JSON 模式、直接解析回答，要 1.27 / 1.31 µs。也就是说，这种回答比 JSON 模式的回答多花 14% 到 16%，2.0 时多花 104% 到 107%。剩下的差距按类型的各部分分别测量：查 schema 约 10 ns，逐个字段读对象并检查 `u32` 的取值范围约 30 ns，读 3 个键值对比把同样的文本读成结构体数组多花约 45 ns；另外发送形式的回答长 54 字节（321 对 267），响应的外层包装也要多读这些字节。只有需要转换的类型才有这部分开销；没有 map、元组、非对象的根，也没有被去掉的约束的类型，回答直接解析。
 
 **本 crate 的 JSON 代码和 serde_json 对比**，第一遍 / 第二遍：
 

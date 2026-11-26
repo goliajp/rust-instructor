@@ -71,6 +71,7 @@ pub(crate) fn build(base: &J, dialect: Dialect) -> Box<str> {
                 v = J::Obj(Map::new());
             }
             walk(&mut v, &mut |m| {
+                optional_recursion(m);
                 any_to_empty(m);
                 const_to_enum(m);
                 for k in strict::GEMINI_DROPS {
@@ -141,6 +142,21 @@ fn const_to_enum(m: &mut Map) {
     {
         let (_, value) = m.remove(i);
         m.insert(i, ("enum".into(), J::Arr(vec![value])));
+    }
+}
+
+// gemini unrolls a recursive reference only so far and asks that it not go
+// through a required property; a list or map of it can be left out instead
+fn optional_recursion(m: &mut Map) {
+    let drop: Vec<String> = strict::fills(m).map(str::to_owned).collect();
+    if drop.is_empty() {
+        return;
+    }
+    if let Some(J::Arr(r)) = m.iter_mut().find(|(k, _)| k == "required").map(|(_, v)| v) {
+        r.retain(|x| !matches!(x, J::Str(n) if drop.contains(n)));
+        if r.is_empty() {
+            remove(m, "required");
+        }
     }
 }
 

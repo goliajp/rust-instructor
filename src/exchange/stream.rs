@@ -2,7 +2,7 @@
 
 use super::{Exchange, Hooks, State};
 use crate::partial::PartialParser;
-use crate::schema::{At, SchemaEntry};
+use crate::schema::{At, Reader};
 use crate::sse::SseDecoder;
 use crate::wire::{Headers, Stream};
 use serde::de::DeserializeOwned;
@@ -19,8 +19,8 @@ pub(super) struct Sse {
     pub(super) acc: Stream,
     pub(super) parser: PartialParser,
     pub(super) delivered: usize,
-    // the answer is in a strict schema's wire form
-    pub(super) strict: bool,
+    // reads an answer in a strict schema's wire form
+    pub(super) reader: Option<Reader>,
     pub(super) wrapped: bool,
 }
 
@@ -34,7 +34,7 @@ impl<O: DeserializeOwned> Exchange<O> {
             acc: provider.stream(&self.req()),
             parser: PartialParser::new(),
             delivered: 0,
-            strict: provider.guided(&self.req()),
+            reader: provider.reader(&self.req()),
             wrapped: provider.wraps_root(&self.req()),
         });
         self.inbound = Some(Inbound {
@@ -55,8 +55,7 @@ impl<O: DeserializeOwned> Exchange<O> {
         let view = View {
             hooks: &self.spec.hooks,
             list: self.spec.list,
-            schema: self.spec.schema,
-            strict: sse.strict,
+            reader: sse.reader,
             wrapped: sse.wrapped,
         };
         let Sse {
@@ -86,8 +85,7 @@ impl<O: DeserializeOwned> Exchange<O> {
                 let view = View {
                     hooks: &self.spec.hooks,
                     list: self.spec.list,
-                    schema: self.spec.schema,
-                    strict: sse.strict,
+                    reader: sse.reader,
                     wrapped: sse.wrapped,
                 };
                 let Sse {
@@ -114,8 +112,7 @@ impl<O: DeserializeOwned> Exchange<O> {
 struct View<'a> {
     hooks: &'a Hooks,
     list: bool,
-    schema: &'static SchemaEntry,
-    strict: bool,
+    reader: Option<Reader>,
     wrapped: bool,
 }
 
@@ -142,10 +139,7 @@ impl View<'_> {
             h(v);
         }
         if let (Some(h), Some(v)) = (&hooks.on_snapshot, view) {
-            let at = self
-                .strict
-                .then(|| At::view(self.schema.guide(), self.list))
-                .flatten();
+            let at = self.reader.and_then(|r| At::view(r.plan, self.list));
             h(v, at);
         }
         if let Some(h) = &hooks.on_item {
@@ -156,7 +150,7 @@ impl View<'_> {
                 if !item.is_complete() {
                     break;
                 }
-                h(&item.to_json(), self.strict.then(|| self.schema.guide()));
+                h(&item.to_json(), self.reader);
                 *delivered += 1;
             }
         }

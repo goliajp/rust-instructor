@@ -24,13 +24,9 @@ pub(crate) enum Bad {
 
 /// Reads answers whose schema was reshaped for the wire, straight into
 /// the caller's type.
-pub(crate) type Guide<'a> = Option<&'a crate::schema::Plan>;
+pub(crate) type Guide = Option<crate::schema::Reader>;
 
-fn direct<O: DeserializeOwned>(
-    s: &str,
-    list: bool,
-    guide: Guide<'_>,
-) -> Result<O, json::JsonError> {
+fn direct<O: DeserializeOwned>(s: &str, list: bool, guide: Guide) -> Result<O, json::JsonError> {
     if let Some(g) = guide {
         return g.answer(s, list);
     }
@@ -51,7 +47,7 @@ pub(crate) fn parse<O: DeserializeOwned>(
     list: bool,
     stop: &Stop,
     accept_truncated: bool,
-    guide: Guide<'_>,
+    guide: Guide,
 ) -> Result<(O, bool), Bad> {
     let direct_err = match direct(content, list, guide) {
         Ok(v) => return Ok((v, false)),
@@ -80,7 +76,7 @@ pub(crate) fn parse<O: DeserializeOwned>(
 }
 
 /// The list items of a cut-off answer that were complete before the cut.
-fn complete_items<O: DeserializeOwned>(content: &str, guide: Guide<'_>) -> Option<(O, bool)> {
+fn complete_items<O: DeserializeOwned>(content: &str, guide: Guide) -> Option<(O, bool)> {
     let mut p = PartialParser::new();
     p.feed(content);
     let root = p.root()?;

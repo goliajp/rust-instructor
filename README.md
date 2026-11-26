@@ -84,9 +84,9 @@ The derive is built on `syn` 3 with exactly the features `serde_derive` uses, so
 
 `openai_compatible` reads the host of the base URL: `api.openai.com` gets `max_completion_tokens`; DeepSeek (`deepseek.com`), Qwen (`aliyuncs.com`), Kimi (`moonshot.cn`, `moonshot.ai`, `kimi.ai`, `kimi.com`) and GLM (`bigmodel.cn`, `z.ai`) get their own [reasoning parameters](#reasoning). DeepSeek, Qwen and GLM default to `JsonObject`, because their documentation describes JSON mode and not strict schemas; any other host is treated as a generic OpenAI-compatible server and gets `Schema`.
 
-A type that refers to itself (a tree, a linked list) is sent with `$defs` and `$ref`. Anthropic structured output cannot express recursion, so for such a type the Anthropic request uses a tool. Gemini unrolls a recursive reference only a few levels and documents it for properties that are not required; a required recursive field such as `children: Vec<Node>` is sent as is and may be rejected or cut short there.
+A type that refers to itself (a tree, a linked list) is sent with `$defs` and `$ref`. Anthropic structured output cannot express recursion, so for such a type the Anthropic request uses a tool. Gemini unrolls a recursive reference only a few levels, and its structured output guide asks that recursion not go through a required property or a list with `minItems` above 0. So in the Gemini schema, a required field that holds a list or a map of the recursive type (such as `children: Vec<Node>`) is optional, and an answer that leaves it out reads as an empty list or map. A required field whose type is the recursive type itself (a `Box<Node>` that is not an `Option`) is sent as is and may be rejected or cut short there.
 
-OpenAI strict schemas and Anthropic structured output take a subset of JSON Schema, so the crate sends some types in another form and turns the answer back before it reaches your type: a map (`HashMap`, `BTreeMap`) goes as a list of `{"key": .., "value": ..}` objects, a tuple as an object with the keys `"0"`, `"1"`, …, and a type whose JSON is not an object (an enum, a `Vec`, a number) inside `{"value": ..}`. Constraints the provider does not take (`uniqueItems` everywhere; `minLength` and `maxLength` on OpenAI; bounds and `maxItems` on Anthropic) are left out of its schema and checked on the answer, and an answer that breaks one is asked again like any other invalid answer. `on_item` and the final value always see your type's own JSON; `on_partial` sees the root unwrapped, but maps and tuples inside it in the sent form.
+OpenAI strict schemas and Anthropic structured output take a subset of JSON Schema, so the crate sends some types in another form and reads the answer in that form straight into your type: a map (`HashMap`, `BTreeMap`) goes as a list of `{"key": .., "value": ..}` objects, a tuple as an object with the keys `"0"`, `"1"`, …, and a type whose JSON is not an object (an enum, a `Vec`, a number) inside `{"value": ..}`. Constraints the provider does not take (`uniqueItems` everywhere; `minLength` and `maxLength` on OpenAI; bounds and `maxItems` on Anthropic) are left out of its schema and checked on the answer, and an answer that breaks one is asked again like any other invalid answer. `on_item`, `on_snapshot` and the final value always see your type's own form; `on_partial` sees the root unwrapped, but maps and tuples inside it in the sent form.
 
 A type that holds a value of any type (a field whose schema is `true`: a hand-written `Schema` returning `Shape::Any`, or `serde_json::Value` through feature `schemars`) has no strict schema. OpenAI then gets the plain schema with `strict: false`, Anthropic gets a tool, and the answer is checked against the schema here; Gemini gets an empty schema object for that field. A tool's `input_schema` and a plain OpenAI schema must be objects too, so a root that is not an object is wrapped in `{"value": ..}` there as well. Gemini ignores `minLength`, `maxLength` and `uniqueItems`, so its schema leaves them out and the answer is checked for them in the same way.
 
@@ -154,6 +154,30 @@ let article: Article = client
 ```
 
 The value is a borrowed view into an incremental parser that reads each byte once, so the work for the whole stream grows linearly with its length. Unfinished strings show the characters received so far, and `is_complete()` tells whether a value has closed. `v.parse::<Snapshot>()` deserializes the value so far into a type of your own (usually one with `Option` fields), and `to_json()` gives its JSON text. The parser is public as [`instructors::partial::PartialParser`](https://docs.rs/instructors/latest/instructors/partial/).
+
+For a typed view, add `#[schema(partial)]` to the type and use `on_snapshot`. The derive also generates `ArticlePartial`: the same struct with every field an `Option`, where a field whose type also has `#[schema(partial)]` holds that type's partial struct. The closure gets one after every delta:
+
+```rust
+#[derive(Deserialize, Schema)]
+#[schema(partial)]
+struct Article {
+    title: String,
+    tags: Vec<String>,
+    author: Author, // Author has #[schema(partial)] too
+}
+
+let article: Article = client
+    .extract("...")
+    .on_snapshot(|a: ArticlePartial| {
+        if let Some(title) = &a.title {
+            println!("title so far: {title}");
+        }
+    })
+    .await?
+    .value;
+```
+
+A string holds the characters received so far, a list the items so far and a map the entries so far. Numbers, `bool`, enums, tuples and sets appear only once complete, so a field never shows `12` while `1234` is still arriving. A field whose type has no partial form takes `#[schema(whole)]` and appears once complete; `#[schema(partial = "Draft")]` names the generated struct; a type with lifetime parameters cannot take `#[schema(partial)]`. On strict wires the maps and tuples in a snapshot are in your type's form, not the sent one. For `extract_many` the snapshot is the list of items so far, and `PartialValue::snapshot::<T>()` gives the same view of a value from `PartialParser`.
 
 For `extract_many`, `on_item` hands you each list item as soon as it is complete:
 
@@ -321,7 +345,7 @@ The floor itself varies by 1.4 µs between passes, so 2.0 and the floor cannot b
 
 Without the network, building the request and parsing the answer of one OpenAI extraction takes 3.6 µs, of which building the request is 0.38 / 0.36 µs. The streaming partial parser takes 5.79 / 5.63 µs for the whole answer in 308 deltas of 4 bytes with a view after each; 1.5.1 took 5.66 / 5.66 µs. The parser source is the same in both versions. Run in separate processes, four times each and alternating, the two versions took 5.57 to 5.73 µs (2.0) and 5.65 to 5.88 µs (1.5.1), and on x86_64 Linux the two programs execute the same number of instructions to within 0.001 % (`perf stat`), so the gap in a single run is run-to-run variation, not code.
 
-**Strict answers that need converting.** A type with a map (the `Complex` type of the schema benchmark, three entries) is sent to OpenAI as a list of key and value pairs, and the answer is turned back before it is parsed. The answer is rewritten into the type's JSON in one pass and then parsed. Handling that answer (the full exchange minus building the request) took 2.75 / 2.69 µs; the same type through JSON mode, where the answer is parsed directly, took 1.32 / 1.31 µs. The rewrite alone took 1.26 / 1.19 µs (it was 3.1 µs when the answer was first built into a tree). Only types that need it pay this; a type without a map, tuple, non-object root or dropped constraint is parsed directly.
+**Strict answers that need converting.** A type with a map (the `Complex` type of the schema benchmark, three entries) is sent to OpenAI as a list of key and value pairs. Since 2.1 the answer is read in that form straight into the type, by a deserializer that follows the schema; 2.0 first rewrote the answer into the type's JSON text and then parsed it. Measured on 2026-11-27 on the same machine, both versions built and run in one benchmark lock, two passes alternating, 1-minute load average 1.6 to 1.7 during the measurement: handling that answer (the full exchange minus building the request) took 1.45 / 1.52 µs, against 2.61 / 2.70 µs for 2.0; the same type through JSON mode, where the answer is parsed directly, took 1.27 / 1.31 µs. So such an answer costs 14 to 16 % more than a JSON-mode answer, down from 104 to 107 %. Of the remaining difference, measured on parts of the type: about 10 ns is looking up the schema, about 30 ns is reading the object field by field and checking its `u32` bound, and about 45 ns is reading the three key and value pairs beyond what reading the same text into a list of structs costs; the wire answer is also 54 bytes longer (321 against 267), and the response envelope reads those bytes too. Only types that need it pay this; a type without a map, tuple, non-object root or dropped constraint is parsed directly.
 
 **The crate's JSON code against serde_json**, pass 1 / pass 2:
 
