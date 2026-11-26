@@ -22,30 +22,18 @@ pub(crate) enum Bad {
     Truncated,
 }
 
-/// Turns an answer into the type's own JSON (a strict schema's wire form
-/// back to the type's), or rejects it.
-pub(crate) type Convert<'a> = Option<&'a dyn Fn(&str) -> Result<String, json::JsonError>>;
+/// Reads answers whose schema was reshaped for the wire, straight into
+/// the caller's type.
+pub(crate) type Guide<'a> = Option<&'a crate::schema::Plan>;
 
 fn direct<O: DeserializeOwned>(
     s: &str,
     list: bool,
-    convert: Convert<'_>,
+    guide: Guide<'_>,
 ) -> Result<O, json::JsonError> {
-    let owned;
-    let s = match convert {
-        // a model that ignored the list wrapper may return the bare list
-        Some(c) => {
-            owned = c(s).or_else(|e| {
-                if list {
-                    c(&format!("{{\"items\":{s}}}")).map_err(|_| e)
-                } else {
-                    Err(e)
-                }
-            })?;
-            owned.as_str()
-        }
-        None => s,
-    };
+    if let Some(g) = guide {
+        return g.answer(s, list);
+    }
     if list {
         // a model that ignored the wrapper may still return the bare list
         json::from_str::<Items<O>>(s)
@@ -63,9 +51,9 @@ pub(crate) fn parse<O: DeserializeOwned>(
     list: bool,
     stop: &Stop,
     accept_truncated: bool,
-    convert: Convert<'_>,
+    guide: Guide<'_>,
 ) -> Result<(O, bool), Bad> {
-    let direct_err = match direct(content, list, convert) {
+    let direct_err = match direct(content, list, guide) {
         Ok(v) => return Ok((v, false)),
         Err(e) => e,
     };
@@ -76,12 +64,12 @@ pub(crate) fn parse<O: DeserializeOwned>(
     let repaired = json::repair(content);
     if let Some(r) = &repaired
         && r.text != content
-        && let Ok(v) = direct(&r.text, list, convert)
+        && let Ok(v) = direct(&r.text, list, guide)
     {
         return Ok((v, cut || r.cut));
     }
     if cut {
-        return complete_items(content, convert).ok_or(Bad::Truncated);
+        return complete_items(content, guide).ok_or(Bad::Truncated);
     }
     Err(Bad::Invalid(match repaired {
         Some(r) if r.text != content => {
@@ -92,7 +80,7 @@ pub(crate) fn parse<O: DeserializeOwned>(
 }
 
 /// The list items of a cut-off answer that were complete before the cut.
-fn complete_items<O: DeserializeOwned>(content: &str, convert: Convert<'_>) -> Option<(O, bool)> {
+fn complete_items<O: DeserializeOwned>(content: &str, guide: Guide<'_>) -> Option<(O, bool)> {
     let mut p = PartialParser::new();
     p.feed(content);
     let root = p.root()?;
@@ -106,7 +94,7 @@ fn complete_items<O: DeserializeOwned>(content: &str, convert: Convert<'_>) -> O
     }
     out.extend_from_slice(b"]}");
     let text = String::from_utf8(out).ok()?;
-    direct::<O>(&text, true, convert).ok().map(|v| (v, true))
+    direct::<O>(&text, true, guide).ok().map(|v| (v, true))
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 //! The functions here are the only JSON entry points in the crate; the
 //! dialect modules never name a JSON library.
 
-mod de;
+pub(crate) mod de;
 mod repair;
 mod scan;
 mod write;
@@ -25,6 +25,8 @@ pub(crate) use write::{write_f64, write_str};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JsonError {
     message: String,
+    // where in the value the error was found, as `/key/0`; empty at the root
+    path: String,
     offset: Option<usize>,
     // 1-based, filled in once the input is known
     line: usize,
@@ -35,6 +37,7 @@ impl JsonError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            path: String::new(),
             offset: None,
             line: 0,
             column: 0,
@@ -54,7 +57,13 @@ impl JsonError {
         self
     }
 
-    fn locate(mut self, input: &[u8]) -> Self {
+    /// The error happened inside `seg` of the value being read.
+    pub(crate) fn under(mut self, seg: &dyn fmt::Display) -> Self {
+        self.path.insert_str(0, &format!("/{seg}"));
+        self
+    }
+
+    pub(crate) fn locate(mut self, input: &[u8]) -> Self {
         let Some(at) = self.offset else { return self };
         let before = &input[..at.min(input.len())];
         self.line = 1 + before.iter().filter(|&&b| b == b'\n').count();
@@ -74,6 +83,9 @@ impl JsonError {
 
 impl fmt::Display for JsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.path.is_empty() {
+            write!(f, "{}: ", self.path)?;
+        }
         if self.line == 0 {
             f.write_str(&self.message)
         } else {

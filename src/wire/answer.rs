@@ -34,9 +34,9 @@ impl Provider {
         }
     }
 
-    /// The answer goes through [`SchemaEntry::unwire`](crate::schema::SchemaEntry)
-    /// before it is parsed.
-    pub(crate) fn unwire(&self, r: &Req<'_>) -> bool {
+    /// The answer is read through the schema's guide
+    /// ([`SchemaEntry::guide`](crate::schema::SchemaEntry)).
+    pub(crate) fn guided(&self, r: &Req<'_>) -> bool {
         self.answer_dialect(r).is_some_and(|d| r.schema.reshaped(d))
     }
 

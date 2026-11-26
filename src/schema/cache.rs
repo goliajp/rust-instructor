@@ -3,6 +3,7 @@ use std::sync::{Mutex, OnceLock};
 use super::dialect;
 use super::lower;
 use super::tree::J;
+#[cfg(any(test, feature = "fuzzing"))]
 use crate::json::JsonError;
 
 use super::{Schema, Shape, lock};
@@ -50,6 +51,7 @@ pub(crate) struct SchemaEntry {
     built: [OnceLock<Box<str>>; DIALECTS],
     reshaped: [OnceLock<bool>; 3],
     has_any: OnceLock<bool>,
+    plan: OnceLock<super::guide::Plan>,
 }
 
 impl SchemaEntry {
@@ -66,6 +68,7 @@ impl SchemaEntry {
             built: Default::default(),
             reshaped: Default::default(),
             has_any: OnceLock::new(),
+            plan: OnceLock::new(),
         }
     }
 
@@ -78,6 +81,7 @@ impl SchemaEntry {
             built: Default::default(),
             reshaped: Default::default(),
             has_any: OnceLock::new(),
+            plan: OnceLock::new(),
         }
     }
 
@@ -92,7 +96,7 @@ impl SchemaEntry {
         &self.name
     }
 
-    /// True when answers to the strict `dialect` need [`unwire`](Self::unwire):
+    /// True when answers to the strict `dialect` need [`guide`](Self::guide):
     /// the schema was reshaped or lost a constraint there.
     pub(crate) fn reshaped(&self, dialect: Dialect) -> bool {
         use super::strict::{ANTHROPIC_DROPS, GEMINI_DROPS, OPENAI_DROPS};
@@ -122,15 +126,17 @@ impl SchemaEntry {
         !super::strict::object_root(&self.base)
     }
 
-    /// The answer to a strict-schema request ([`Dialect::Strict`],
-    /// [`Dialect::AnthropicOutput`]) as the type's own JSON.
-    pub(crate) fn unwire(&self, answer: &str) -> Result<String, JsonError> {
-        super::transcode::answer(&self.base, answer).map_err(JsonError::new)
+    /// Reads answers to the dialects [`reshaped`](Self::reshaped) marks.
+    pub(crate) fn guide(&self) -> &super::guide::Plan {
+        self.plan
+            .get_or_init(|| super::guide::Plan::new(&self.base))
     }
 
-    /// One complete item of a strict list answer as the item type's JSON.
-    pub(crate) fn unwire_item(&self, item: &str) -> Result<String, JsonError> {
-        super::transcode::item(&self.base, item).map_err(JsonError::new)
+    /// The answer as the type's own JSON text: the reference the guided
+    /// reader is tested against.
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn unwire(&self, answer: &str) -> Result<String, JsonError> {
+        super::transcode::answer(&self.base, answer).map_err(JsonError::new)
     }
 
     #[cfg(test)]

@@ -31,3 +31,23 @@ pub fn json_write_u64(out: &mut Vec<u8>, n: u64) {
 pub fn json_write_f64(out: &mut Vec<u8>, n: f64) {
     crate::json::write_f64(out, n)
 }
+
+/// A strict-schema answer read by the guided deserializer.
+pub fn strict_guided<T>(text: &str) -> Result<T, JsonError>
+where
+    T: serde::de::DeserializeOwned + crate::Schema,
+{
+    crate::schema::entry_for::<T>(false)
+        .guide()
+        .answer(text, false)
+}
+
+/// The same answer rewritten into the type's own JSON text and then
+/// parsed: the reference the guided reader is checked against.
+pub fn strict_reference<T>(text: &str) -> Result<T, JsonError>
+where
+    T: serde::de::DeserializeOwned + crate::Schema,
+{
+    let own = crate::schema::entry_for::<T>(false).unwire(text)?;
+    crate::json::from_str(&own)
+}
